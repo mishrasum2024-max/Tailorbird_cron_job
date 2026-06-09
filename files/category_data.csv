@@ -1,0 +1,33 @@
+Category Code,Category Name,Description,GL Account Number,Imported From,Test Column
+100,CA_Clubhouse/Leasing Cntr Furnishing-Fitness,,501,category-data.csv,testing1
+102,CA_Elevator,,502,category-data.csv,testing2
+200,EXT_Asphalt Repair/Seal Coat,,503,category-data.csv,testing3
+201,EXT_Concrete Flat Work,,504,category-data.csv,testing4
+202,EXT_Concrete Walkways,,505,category-data.csv,testing5
+203,EXT_Dog Park,,506,category-data.csv,testing6
+101,CA_Clubhouse/Leasing Cntr Renovation,,507,category-data.csv,testing7
+300,INT_ADA Modifications,,508,category-data.csv,testing8
+301,INT_Appliances,,509,category-data.csv,testing9
+310,INT_Bath Cabinet Repair/Replace,,510,category-data.csv,testing10
+311,INT_Blinds Replace,,511,category-data.csv,testing11
+312,INT_Cabinet hardware,,512,category-data.csv,testing12
+302,INT_Cabinets,,513,category-data.csv,testing13
+303,INT_Carpet,,514,category-data.csv,testing14
+309,INT_Countertops,,515,category-data.csv,testing15
+304,INT_Vanity,,516,category-data.csv,testing16
+305,INT_Misc. Hardware & Trim Carpentry,,517,category-data.csv,testing17
+315,INT_Outlet Covers/Plates/Switches,,518,category-data.csv,testing18
+306,INT_Painting & Drywall,,519,category-data.csv,testing19
+316,INT_Pest Control,,520,category-data.csv,testing20
+317,INT_Plumbing,,521,category-data.csv,testing21
+314,INT_Tile flooring,,522,category-data.csv,testing22
+313,INT_Unit Electrical - Rewire,,523,category-data.csv,testing23
+307,INT_Vinyl Flooring,,524,category-data.csv,testing24
+308,INT_Water Heaters,,525,category-data.csv,testing25
+206,EXT_Exterior Lighting,,526,category-data.csv,testing26
+205,EXT_Exterior Finish (Vinyl/Masonry),,527,category-data.csv,testing27
+204,EXT_Exterior Carpentry/Wood Repair,,528,category-data.csv,testing28
+207,EXT_Fencing/Fence Feature,,529,category-data.csv,testing29
+208,EXT_Gutters & Downspouts,,530,category-data.csv,testing30
+209,EXT_Hvac Exterior,,531,category-data.csv,testing31
+210,EXT_Irrigation,,532,category-data.csv,testing32

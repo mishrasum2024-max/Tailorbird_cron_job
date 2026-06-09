@@ -1,0 +1,18 @@
+{
+  "_source": "MCP beta 2026-05-05: /manage-team 404; Manage User Roles → /user-role-management (grid). Manage Organization → /organization (Users + Property access).",
+  "rolesIntro": "Manage custom organization roles and their permission bundles.",
+  "addRoleButtonText": "Add Role",
+  "searchBoxName": "Search...",
+  "tabUsers": "Users",
+  "tabRoles": "Roles",
+  "tabPropertyAccess": "Property access",
+  "breadcrumbUserRoleManagement": "User Role Management",
+  "breadcrumbTail": "Organization",
+  "gridColumnProperties": "Properties",
+  "gridColumnLocation": "Location",
+  "columnName": "Name",
+  "columnDescription": "Description",
+  "columnPermissions": "Permissions",
+  "builtInRoleEditor": "Editor",
+  "builtInRoleViewOnly": "View Only"
+}

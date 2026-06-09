@@ -1,0 +1,41 @@
+{
+  "name": "tailorbird_ui_automation",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "npx playwright test",
+    "test:full": "npx playwright test",
+    "test:login": "npx playwright test --grep @login --workers=1",
+    "test:sanity": "npx playwright test --grep @sanity --workers=1",
+    "test:regression": "npx playwright test --grep @mandatory --workers=1 && npx playwright test --grep-invert @mandatory --workers=4",
+    "test:property": "npx playwright test --grep @property --workers=4",
+    "test:projectAndJob": "npx playwright test --grep @projectAndJob --workers=4",
+    "test:bids": "npx playwright test --grep @bids --workers=1",
+    "test:contract": "npx playwright test --grep @contract --workers=1",
+    "test:budget": "npx playwright test --grep @budget --workers=4",
+    "test:changeOrderAndinvoice": "npx playwright test --grep @mandatory --workers=1 && npx playwright test --grep @changeOrderAndinvoice --workers=4",
+    "test:approval": "npx playwright test --grep @approval --workers=4",
+    "test:mandatory": "npx playwright test --grep @mandatory --workers=1",
+    "test:invertMandatory": "npx playwright test --grep-invert @mandatory --workers=4",
+    "test:headed": "npx playwright test --headed"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Harshalogy/Tailorbird_ui_automation.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Harshalogy/Tailorbird_ui_automation/issues"
+  },
+  "homepage": "https://github.com/Harshalogy/Tailorbird_ui_automation#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "@types/node": "^24.10.1"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "_source": "Live AuthKit on beta.tailorbird.com → stalwart-collection-11-staging.authkit.app. Each scenario was exercised in MCP browser 2026-05-04; DOM had no [role=alert] nodes in page.evaluate — errors are inline text and/or <p> for the credentials banner.",
+  "_mcpVerifiedScenarios": {
+    "emptyEmailContinue": "Please enter your email",
+    "malformedEmailContinue": "Please provide a valid email",
+    "whitespaceOnlyEmailContinue": "Please provide a valid email",
+    "injectionStyleEmailContinue": "Please provide a valid email",
+    "emptyPasswordSignIn": "Please enter your password",
+    "wrongPasswordSignIn": "Invalid email or password",
+    "noteLongEmail": "Very long valid-form email (180x a + @t.co) reached /password in MCP; wrong password then shows Invalid email or password"
+  },
+  "emailRequired": "Please enter your email",
+  "emailInvalid": "Please provide a valid email",
+  "passwordRequired": "Please enter your password",
+  "credentialsInvalid": "Invalid email or password"
+}

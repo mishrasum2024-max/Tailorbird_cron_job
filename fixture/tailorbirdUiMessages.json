@@ -1,0 +1,19 @@
+{
+  "_source": "ClientWrapper.tsx user Menu.Dropdown: Manage User Roles, Manage Organization, Profile, Logout; userSettingsMenu.ts hides org items for vendor users (Profile+Logout only). Re-probe beta after UI changes.",
+  "manageTeamPath": "/organization",
+  "userMenuProfile": "Profile",
+  "userMenuManageTeam": "Manage Team",
+  "userMenuManageOrganizationLegacy": "Manage Organization",
+  "userMenuLogout": "Logout",
+  "inviteDrawerHeading": "Invite users",
+  "inviteEmailLabel": "Email addresses",
+  "inviteEmailPlaceholder": "colleague@company.com, teammate@company.com",
+  "inviteOrgRoleTrigger": "New role",
+  "inviteWizardNext": "Next",
+  "breadcrumbOrganizationOrTeam": "Organization|Team",
+  "_propertyToasts": "BirdTable CreateRowModal.tsx: success title Success, message `${tableName} created successfully` for table property; error title Error, message prefix Failed to create property:",
+  "propertyCreatedToastTitle": "Success",
+  "propertyCreatedToastMessage": "property created successfully",
+  "propertyCreateFailedToastTitle": "Error",
+  "propertyCreateFailedToastPrefix": "Failed to create property"
+}

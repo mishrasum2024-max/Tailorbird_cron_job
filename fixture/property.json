@@ -1,0 +1,171 @@
+{
+  "viewName": "Table View",
+  "expectedHeaders": [
+    "Name",
+    "Address",
+    "City",
+    "State",
+    "Zipcode",
+    "Type",
+    "Unit Count",
+    "Project Count",
+    "Job Count",
+    "Budget Variance",
+    "Random Name",
+    "Fund",
+    "Region",
+    "Actions"
+  ],
+  "scrollIncrement": 5,
+  "tabs": [
+    "Overview",
+    "Asset Viewer",
+    "Takeoffs",
+    "Locations"
+  ],
+  "overviewFields": [
+    {
+      "label": "Ownership Group",
+      "value": "Tailorbird_QA_Automations"
+    },
+    {
+      "label": "Property Name",
+      "value": "DYNAMIC_PROPERTY_NAME"
+    },
+    {
+      "label": "Property Type",
+      "value": "Garden Style"
+    },
+    {
+      "label": "Address",
+      "value": "DYNAMIC_ADDRESS"
+    },
+    {
+      "label": "City",
+      "value": "DYNAMIC_CITY"
+    },
+    {
+      "label": "State",
+      "value": "DYNAMIC_STATE"
+    },
+    {
+      "label": "Zip Code",
+      "value": "DYNAMIC_ZIP"
+    },
+    {
+      "label": "Unit Count",
+      "value": "0"
+    }
+  ],
+  "createProperty": {
+    "modalHeader": "Add property",
+    "addButton": "Add Property",
+    "cancelButton": "Cancel",
+    "createButton": "Create Property"
+  },
+  "addressSample": "Domestic Terminal, College Park, GA 30337, USA",
+  "citySample": "College Park",
+  "stateSample": "GA",
+  "zipSample": "30337",
+  "propertyType": {
+    "garden": "Garden Style",
+    "midRise": "Mid Rise",
+    "highRise": "High Rise",
+    "military": "Military Housing"
+  },
+  "documentsSection": {
+    "header": "Property Documents",
+    "subHeader": "Files and images related to this property",
+    "uploadButton": "Upload Files",
+    "uploadModalTexts": [
+      "Drop files here",
+      "From device",
+      "Google Drive",
+      "Dropbox",
+      "Cancel",
+      "Powered by Uploadcare"
+    ]
+  },
+  "manageColumns": {
+    "expectedColumns": [
+      "Cover",
+      "Description",
+      "File Name",
+      "mime_type",
+      "Project",
+      "Property",
+      "Size",
+      "Source",
+      "System Remarks",
+      "Tags",
+      "Type",
+      "Uploaded Date",
+      "uuid"
+    ],
+    "columnNamePlaceholder": "Enter column name",
+    "columnDescPlaceholder": "Enter column description",
+    "submitButton": "Add column"
+  },
+  "uploadActions": {
+    "deviceUpload": "From device",
+    "done": "Done",
+    "clearAll": "Clear all",
+    "addFiles": "Add Files"
+  },
+  "userInvite": {
+    "inviteButtonText": "Invite",
+    "invitedBadgeText": "Invited",
+    "revokeDialogTitle": "Revoke Invitation",
+    "revokeDialogMessage": "Are you sure you want to revoke the invitation for {{email}}?",
+    "revokeConfirmButton": "Delete",
+    "resendDialogTitle": "Resend Invitation",
+    "resendDialogMessage": "Do you want to resend the invitation to {{email}}?",
+    "resendConfirmButton": "Resend",
+    "resendSuccessTitle": "Success",
+    "resendSuccessMessage": "Invitation sent successfully to {{email}}",
+    "resendSuccessCloseButton": "Close",
+    "editRoleDialogTitle": "Edit Role",
+    "saveButtonText": "Save",
+    "roles": [
+      "Admin",
+      "User"
+    ]
+  },
+  "exportDrawer": {
+    "title": "Export Views",
+    "cancel": "Cancel",
+    "download": "Download Selected",
+    "selectAll": "Select All",
+    "selectNone": "Select None"
+  },
+  "assetViewerLabels": {
+    "type": "Type",
+    "site": "Site",
+    "view": "View",
+    "no3DMain": "No 3D View Selected",
+    "no3DSub": "Select a type, item, and view from the dropdowns above"
+  },
+  "takeoffTabHeaders": [
+    "Floor Plan Type",
+    "Floor Plan Type Area",
+    "Total Floor Plan Type Quantity",
+    "Unit Mix Floor Plan Type Quantity",
+    "Location/Room",
+    "Level",
+    "Item Category",
+    "Item Subcategory",
+    "Item",
+    "SKU",
+    "Item Count",
+    "Item UOM",
+    "Qauntity Per Item",
+    "Total Quantity",
+    "Wastage (%)",
+    "Total Including Wastage",
+    "Actions"
+  ],
+
+  "noResultsText": "No properties added yet",
+  "noResultsHintText": "Use + or Create Button to create one",
+  "noResultsLegacyAliases": ["No results found"]
+}

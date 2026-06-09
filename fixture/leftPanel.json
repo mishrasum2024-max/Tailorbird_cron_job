@@ -1,0 +1,31 @@
+{
+  "dashboardUrl": "/financials/capex",
+  "expectedLabels": [
+    "Properties",
+    "Approvals",
+    "Construction Management",
+    "Projects",
+    "Jobs (Contracts & POs)",
+    "Financials",
+    "Category",
+    "Budget",
+    "CapEx",
+    "Trackers",
+    "Unit Tracker",
+    "Documents",
+    "Files",
+    "Images"
+  ],
+  
+  "menuItems": [
+    { "label": "Properties",         "url": "/properties" },
+    { "label": "Projects",           "url": "/projects" },
+    { "label": "Category",           "url": "/financials/category" },
+    { "label": "Budget",             "url": "/financials/budget" },
+    { "label": "CapEx",              "url": "/financials/capex" },
+    { "label": "Unit Tracker",       "url": "/unit-tracker" },
+    { "label": "Files",              "url": "/documents/files" },
+    { "label": "Images",             "url": "/documents/images" }
+  ]
+
+}

@@ -1,0 +1,88 @@
+{
+  "_comment": "All static text labels, headers, CTAs and expected strings for the Unit Interior test suite",
+
+  "jobSearch": {
+    "jobName": "Automation Job, please don't delete it",
+    "jobType": "Unit Interior",
+    "jobStatus": "Approved"
+  },
+
+  "jobTabs": {
+    "jobSummary":   "Job Summary",
+    "bids":         "Bids",
+    "contracts":    "Contracts",
+    "changeOrders": "Change Orders",
+    "invoice":      "Invoice"
+  },
+
+  "contractOverview": {
+    "propertyLabel":           "Property",
+    "budgetCategoryLabel":     "Budget Category",
+    "contractIdLabel":         "Contract ID",
+    "vendorLabel":             "Vendor",
+    "vendorAddressLabel":      "Vendor Address",
+    "durationLabel":           "Duration",
+    "estimatedTotalCostLabel": "Estimated Total Cost",
+    "contractTermsLabel":      "Contract Terms",
+    "editButtonCTA":           "Edit"
+  },
+
+  "contractSubTabs": ["Contract", "Units", "Documents"],
+
+  "unitsTab": {
+    "searchPlaceholder": "Search by unit name",
+
+    "toolbarButtons": {
+      "editScopes":   "Edit Scopes",
+      "updateStatus": "Update Status",
+      "releaseUnits": "Release Units"
+    },
+
+    "gridColumnHeaders": [
+      "Unit",
+      "FP Type",
+      "Unit Type",
+      "Status",
+      "Start Date",
+      "End Date",
+      "Days In Renovation",
+      "Actions"
+    ],
+
+    "knownStatusValues": [
+      "Not in Reno",
+      "Released",
+      "Not Started",
+      "In Progress",
+      "Completed",
+      "Cancelled"
+    ],
+
+    "updateStatusDropdown": {
+      "options": [
+        "Not in Reno",
+        "Released",
+        "Not Started",
+        "In Progress",
+        "Completed",
+        "Cancelled"
+      ]
+    },
+
+    "toggleUnitNumbers": [105, 106, 107],
+    "plainUnitNumbers":  [101, 102, 103, 104, 108, 201],
+
+    "unitActionsButtonLabel": "Unit actions"
+  },
+
+  "releaseUnitsDialog": {
+    "title":              "Release Units with Scopes",
+    "subtitle":           "Select which scopes apply to each unit before releasing them",
+    "selectAllLabel":     "Select all scopes",
+    "applyToAllCTA":      "Apply same Scope to all Units",
+    "releaseWithScopesCTA": "Release with Scopes",
+    "closeButtonLabel":   "Close",
+    "tableHeaders": ["Units", "Bid with material", "Bid without material"],
+    "scopeNames":   ["Bid with material", "Bid without material"]
+  }
+}

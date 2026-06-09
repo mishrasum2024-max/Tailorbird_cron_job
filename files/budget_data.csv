@@ -1,0 +1,13 @@
+Category,Description,Budget Item,Original Budget,Current Budget,
+Construction,Site preparation work,Site Prep,"$4,200.01","$4,200.01","$4,200.01"
+Construction,Concrete foundation work,Concrete,"$15,000.01","$18,000.01","$15,000.02"
+Concrete,Concrete foundation work,Concrete foundation work,"$4,200.01","$4,200.01","$4,200.01"
+Wiring,Internal electrical wiring,Internal electrical wiring,"$15,000.02","$18,000.02","$15,000.03"
+Lighting,Lighting fixtures and install,Lighting fixtures and install,"$8,500.02","$9,500.02",12000
+Piping,Water supply piping,Water supply piping,"$4,200.02","$4,200.02",16000
+Fixtures,Bathroom fixtures install,Bathroom fixtures install,"$15,000.03","$18,000.03",11500
+Equipment,HVAC main equipment,HVAC main equipment,"$8,500.03","$9,500.03",30000
+Ductwork,Ductwork installation,Ductwork installation,"$4,200.03","$4,200.03",16000
+Painting,Interior wall painting,Interior wall painting,"$15,000.04","$18,000.04",9000
+Flooring,Tile and carpet flooring,Tile and carpet flooring,"$8,500.04","$9,500.04",25000
+Landscaping,External landscaping,External landscaping,"$4,200.04","$4,200.04",9000

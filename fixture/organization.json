@@ -1,0 +1,32 @@
+{
+  "dashboardUrl": "/dashboard",
+  "organizationUrl": "/organization",
+
+  "inviteDialogTitle": "Invite users",
+  "inviteWizardNextText": "Next",
+  "inviteCancelText": "Cancel",
+  "inviteButtonText": "Invite",
+  "inviteOrgRoleTriggerText": "New role",
+  "inviteMappedLegacyMemberRole": "View Only",
+  "inviteMappedLegacyAdminRole": "Editor",
+
+  "invitedBadgeText": "Invited",
+  "noResultsText": "No users found for query",
+
+  "revokeDialogTitle": "Revoke invite?",
+  "revokeDialogMessage": "Are you sure you want to revoke the invite to {{email}}? This action is immediate and cannot be undone.",
+  "revokeConfirmButton": "Revoke",
+
+  "resendDialogTitle": "Resend invite?",
+  "resendDialogMessage": "Are you sure you want to resend the invite to {{email}}?",
+  "resendConfirmButton": "Resend",
+
+  "resendSuccessTitle": "Invite sent",
+  "resendSuccessMessage": "The invite email has been resent to {{email}}",
+  "resendSuccessCloseButton": "Close",
+
+  "editRoleDialogTitle": "Edit roles",
+  "saveButtonText": "Save",
+
+  "roles": ["Admin", "Member"]
+}
