@@ -512,7 +512,7 @@ test.describe('Properties cleanup', () => {
   }) => {
     // Large environments can have hundreds of generated properties;
     // allow enough time for full cleanup in one run.
-    test.setTimeout(180000);
+    test.setTimeout(1800000);
 
     const recent = loadRecentPropertyName();
     const keep = new Set([SAMPLE_PROPERTY_1, SAMPLE_PROPERTY_2, SAMPLE_PROPERTY_3, SAMPLE_PROPERTY_4]);
