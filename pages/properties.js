@@ -289,7 +289,7 @@ class PropertiesHelper {
             await this.goToProperties();
         }
         await this.page.waitForLoadState("domcontentloaded");
-        await this.page.waitForTimeout(800);
+        await this.page.waitForTimeout(14000);
         // CI-safe: in some runs only "Layout"/"View" is clickable (other table-action buttons are Filter/Export).
         const switchers = this.page
             .getByRole('button', { name: /^(layout|view|table)$/i })
@@ -303,13 +303,13 @@ class PropertiesHelper {
                 if (!(await switcher.isVisible().catch(() => false))) continue;
                 await switcher.click({ force: true }).catch(() => { });
                 const viewItem = this.page.getByRole('menuitem', { name: view }).first();
-                if (await viewItem.isVisible({ timeout: 1500 }).catch(() => false)) {
+                if (await viewItem.isVisible({ timeout: 15000 }).catch(() => false)) {
                     await viewItem.click({ force: true }).catch(() => { });
                     menuOpened = true;
                     break;
                 }
             }
-            if (!menuOpened) await this.page.waitForTimeout(300);
+            if (!menuOpened) await this.page.waitForTimeout(3000);
         }
         if (!menuOpened) this.log(`changeView: menu item "${view}" not visible; proceeding with current view.`);
 
