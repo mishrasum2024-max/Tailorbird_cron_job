@@ -21,7 +21,7 @@ test.use({
 const SAMPLE_PROPERTY_1 = 'Test Property 1_Cottages on Elm';
 const SAMPLE_PROPERTY_2 = 'Test Property 2_The Westerham';
 const SAMPLE_PROPERTY_3 = 'Test Property3 Automation Retainage flow';
-const SAMPLE_PROPERTY_4 = 'Test Property 4_Malmstrom';
+const SAMPLE_PROPERTY_4 = 'Test Property4_Multiapprover_automation';
 
 /**
  * Loads recently created property name.
