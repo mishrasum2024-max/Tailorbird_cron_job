@@ -22,6 +22,8 @@ const SAMPLE_PROPERTY_1 = 'Test Property 1_Cottages on Elm';
 const SAMPLE_PROPERTY_2 = 'Test Property 2_The Westerham';
 const SAMPLE_PROPERTY_3 = 'Test Property3 Automation Retainage flow';
 const SAMPLE_PROPERTY_4 = 'Test Property4_Multiapprover_automation';
+const SAMPLE_PROPERTY_5 = 'Test property5 for retainage unitirior flow';
+
 
 /**
  * Loads recently created property name.
@@ -413,6 +415,7 @@ test.describe('Properties cleanup', () => {
       SAMPLE_PROPERTY_2,
       SAMPLE_PROPERTY_3,
       SAMPLE_PROPERTY_4,
+      SAMPLE_PROPERTY_5,
     ]);
 
     console.log(`[cleanup-jobs] *** ${dryRun ? 'DRY-RUN MODE — nothing will be deleted' : 'LIVE MODE — deletions are real'} ***`);
@@ -515,9 +518,9 @@ test.describe('Properties cleanup', () => {
     test.setTimeout(1800000);
 
     const recent = loadRecentPropertyName();
-    const keep = new Set([SAMPLE_PROPERTY_1, SAMPLE_PROPERTY_2, SAMPLE_PROPERTY_3, SAMPLE_PROPERTY_4]);
+    const keep = new Set([SAMPLE_PROPERTY_1, SAMPLE_PROPERTY_2, SAMPLE_PROPERTY_3, SAMPLE_PROPERTY_4, SAMPLE_PROPERTY_5]);
     if (recent) keep.add(recent);
-    const requiredKeep = new Set([SAMPLE_PROPERTY_1, SAMPLE_PROPERTY_2, SAMPLE_PROPERTY_3, SAMPLE_PROPERTY_4]);
+    const requiredKeep = new Set([SAMPLE_PROPERTY_1, SAMPLE_PROPERTY_2, SAMPLE_PROPERTY_3, SAMPLE_PROPERTY_4, SAMPLE_PROPERTY_5]);
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
     const page = await context.newPage();
