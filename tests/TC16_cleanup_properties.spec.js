@@ -6,6 +6,7 @@ const path = require('path');
 const { LoginPage } = require('../pages/loginPage');
 const PropertiesHelper = require('../pages/properties');
 const OrganizationHelper = require('../pages/organizationHelper');
+const { InvoicePage } = require('../pages/invoicePage');
 const data = require('../fixture/organization.json');
 
 test.use({
@@ -515,7 +516,7 @@ test.describe('Properties cleanup', () => {
   }) => {
     // Large environments can have hundreds of generated properties;
     // allow enough time for full cleanup in one run.
-    test.setTimeout(1800000);
+    test.setTimeout(3600000);
 
     const recent = loadRecentPropertyName();
     const keep = new Set([SAMPLE_PROPERTY_1, SAMPLE_PROPERTY_2, SAMPLE_PROPERTY_3, SAMPLE_PROPERTY_4, SAMPLE_PROPERTY_5]);
@@ -602,6 +603,55 @@ test.describe('Properties cleanup', () => {
     } finally {
       await context.close().catch((e) => {
         console.warn(`[cleanup-users] context.close warning ignored: ${e.message}`);
+      });
+    }
+  });
+
+  test('TC262 @cleanup @invoice Create and confirm 40 invoices for the requested job', async ({ browser }) => {
+    test.setTimeout(1800000); // 30 min for 40 repeated invoice confirmations
+
+    const context = await browser.newContext({ storageState: 'sessionState.json' });
+    const page = await context.newPage();
+    const invoicePage = new InvoicePage(page);
+    const targetUrl = process.env.INVOICE_TARGET_URL || 'https://beta.tailorbird.com/jobs/3861?propertyId=6009&tab=invoices';
+
+    try {
+      await test.step('Open the requested job invoice page', async () => {
+        await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
+        await page.waitForTimeout(10000);
+        if ((page.url() || '').includes('/login')) {
+          throw new Error('sessionState.json is not authenticated. Refresh sessionState once, then rerun cleanup.');
+        }
+        await expect(page).toHaveURL(/tab=invoices/i);
+      });
+
+      await test.step('Create and confirm 40 invoices in a loop', async () => {
+        const totalRuns = 40;
+        for (let index = 1; index <= totalRuns; index++) {
+          const invoiceNumber = `AUTO-${Date.now()}-${String(index).padStart(2, '0')}`;
+          const invoiceTitle = `Automation Invoice ${index}`;
+          const invoiceDescription = `Cleanup invoice ${index}`;
+
+          console.log(`[cleanup-invoices] Creating invoice ${index}/${totalRuns}: ${invoiceTitle}`);
+
+          await invoicePage.clickAddInvoice();
+          await page.waitForTimeout(2000);
+
+          await invoicePage.fillInvoiceDetails({
+            title: invoiceTitle,
+            description: invoiceDescription,
+            invoiceNumber,
+          });
+
+          await invoicePage.fillInvoiceGridAmount(100);
+          await invoicePage.confirmInvoiceAndHandleModal();
+          await invoicePage.goBackToInvoiceList();
+          await page.waitForTimeout(2000);
+        }
+      });
+    } finally {
+      await context.close().catch((error) => {
+        console.warn(`[cleanup-invoices] context.close warning ignored: ${error.message}`);
       });
     }
   });
