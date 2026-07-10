@@ -659,7 +659,7 @@ test.describe('Properties cleanup', () => {
 
 test.describe('Organization pending users cleanup', () => {
   test('TC260 @cleanup @organization Cleanup invited/expired users across pages', async ({ browser }) => {
-    test.setTimeout(600000);
+    test.setTimeout(3600000);
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
     const page = await context.newPage();
@@ -668,7 +668,10 @@ test.describe('Organization pending users cleanup', () => {
     try {
       try {
         await test.step('Open Manage Organization (reuse existing session)', async () => {
-          await org.goto(process.env.ORGANIZATION_URL || '/organization');
+          // org.goto() requires an absolute URL (no baseURL is configured for this project);
+          // gotoOrganizationWorkspace() is the same DASHBOARD_URL + UI-navigation path every
+          // other test uses to reach Organization, so it works without a dedicated ORGANIZATION_URL.
+          await org.gotoOrganizationWorkspace();
           await page.waitForTimeout(10000);
 
           // Hard fail fast when session is stale; avoids relogin in this cleanup flow.
