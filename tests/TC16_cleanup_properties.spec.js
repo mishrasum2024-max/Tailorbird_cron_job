@@ -860,4 +860,49 @@ test.describe('Organization pending users cleanup', () => {
       await context.close();
     }
   });
+
+   test('TC264 @cleanup @organization Remove/revoke all users matching "fga_scope" regardless of status', async ({ browser }) => {
+    test.setTimeout(600000); // 10 min cap — search narrows the table first, so this should stay well under budget
+
+    const context = await browser.newContext({ storageState: 'sessionState.json' });
+    const page = await context.newPage();
+    const org = new OrganizationHelper(page);
+
+    try {
+      try {
+        await test.step('Open Manage Organization (reuse existing session)', async () => {
+          await org.gotoOrganizationWorkspace();
+          await page.waitForTimeout(10000);
+
+          if ((page.url() || '').includes('/login')) {
+            throw new Error('sessionState.json is not authenticated. Refresh sessionState once, then rerun cleanup.');
+          }
+        });
+
+        await test.step('Search users matching "fga_scope"', async () => {
+          const search = page.locator('input[placeholder="Search by name or e-mail"]').first();
+          await search.waitFor({ state: 'visible', timeout: 15000 });
+          await search.fill('fga_scope');
+          await page.waitForTimeout(5000);
+        });
+
+        await test.step('Remove/revoke matching users regardless of status', async () => {
+          // Per requirement: "fga_scope" accounts are cleaned up even if already Active/Member,
+          // not just Invited/Expired — uses revokeUsersMatchingTextAnyStatus (separate from the
+          // Invited/Expired-only revokeAllInvitedUsersAcrossPages used by TC260).
+          const revokedCount = await revokeUsersMatchingTextAnyStatus(page, 'fga_scope');
+          if (revokedCount === 0) {
+            console.log('[cleanup-fga] No users matching "fga_scope" found.');
+          } else {
+            console.log(`[cleanup-fga] Total "fga_scope" users removed/revoked: ${revokedCount}`);
+          }
+          expect(revokedCount).toBeGreaterThanOrEqual(0);
+        });
+      } catch (err) {
+        throw new Error(`[cleanup-fga] User cleanup failed: ${err?.message || err}`);
+      }
+    } finally {
+      await context.close();
+    }
+  });
 });
