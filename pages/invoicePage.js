@@ -1938,6 +1938,19 @@ class InvoicePage {
         await dismissToasts();
         await this.page.waitForTimeout(250);
 
+        // Either click below can trigger the actual save — arm the response watcher
+        // before clicking so we don't race it. A blind fixed wait was timing out
+        // under CI's slower/faster network conditions even though it worked locally;
+        // waiting on the real save response makes this deterministic instead.
+        const invoiceSavedResponsePromise = this.page.waitForResponse(
+            (resp) => {
+                const url = resp.url();
+                const ok = resp.status() >= 200 && resp.status() < 300;
+                return ok && (/\/api\/invoices?(\/|\?|$)/i.test(url) || (url.includes('bird-table') && /invoice/i.test(url)));
+            },
+            { timeout: 20000 }
+        ).catch(() => null);
+
         // Click confirm; retry if a toast intercepts the pointer
         try {
             await confirmInvoiceBtn.click({ timeout: 15000 });
@@ -1960,8 +1973,15 @@ class InvoicePage {
             }
         }
 
-        // Give app time to validate/publish
-        await this.page.waitForTimeout(1500);
+        // Prefer the real save response; only fall back to the fixed wait if it
+        // never showed up (e.g. URL pattern didn't match), so behavior can't regress.
+        const savedResponse = await invoiceSavedResponsePromise;
+        if (savedResponse) {
+            Logger.info(`Invoice save API responded: ${savedResponse.status()} ${savedResponse.url()}`);
+        } else {
+            Logger.info('Invoice save API response not detected within timeout — falling back to fixed wait.');
+            await this.page.waitForTimeout(7500);
+        }
 
         const failureToast = this.page.locator('text=/Confirmation Failed|Empty invoice/i').first();
         if (await failureToast.isVisible({ timeout: 1000 }).catch(() => false)) {
