@@ -23,7 +23,6 @@ const SAMPLE_PROPERTY_1 = 'Test Property 1_Cottages on Elm';
 const SAMPLE_PROPERTY_2 = 'Test Property 2_The Westerham';
 const SAMPLE_PROPERTY_3 = 'Test Property3 Automation Retainage flow';
 const SAMPLE_PROPERTY_4 = 'Test Property4_Multiapprover_automation';
-const SAMPLE_PROPERTY_5 = 'Test property5 for retainage unitirior flow';
 
 
 /**
@@ -405,6 +404,100 @@ async function revokeAllInvitedUsersAcrossPages(page) {
   return totalRevoked;
 }
 
+/**
+ * Removes/revokes every user row whose text matches `matchText`, regardless of status
+ * (Invited, Expired, or already-active Member) — unlike revokeAllInvitedUsersAcrossPages,
+ * which only targets Invited/Expired rows. Active members use a "Remove user" menu action
+ * instead of "Revoke invitation"/"Remove invitation", so this tries each in turn.
+ * Kept separate from revokeAllInvitedUsersAcrossPages (used by TC260) so that flow is untouched.
+ * @param {import('@playwright/test').Page} page
+ * @param {string} matchText
+ */
+async function revokeUsersMatchingTextAnyStatus(page, matchText) {
+  const tableRows = page.locator('table tbody tr').filter({ hasText: new RegExp(matchText, 'i') });
+  const nextPageBtn = page
+    .locator(
+      'button[aria-label*="next" i], button:has-text("Next"), [data-testid*="next" i], button:has(svg.lucide-chevron-right)'
+    )
+    .first();
+
+  let totalRemoved = 0;
+  const maxPages = 100;
+
+  for (let pageNo = 1; pageNo <= maxPages; pageNo++) {
+    let removedOnThisPage = 0;
+
+    for (let guard = 0; guard < 100; guard++) {
+      const rowCount = await tableRows.count();
+      if (rowCount === 0) break;
+
+      const targetRow = tableRows.first();
+      const rowText = (await targetRow.innerText().catch(() => '')).trim();
+
+      const actionButton = targetRow
+        .locator('button[title="User actions"], button[aria-label*="user action" i], button:has(svg.lucide-ellipsis-vertical)')
+        .first();
+      const btnVisible = await actionButton.isVisible({ timeout: 5000 }).catch(() => false);
+      if (!btnVisible) break;
+      await actionButton.click();
+
+      const menu = page.locator('[role="menu"]').first();
+      await menu.waitFor({ state: 'visible', timeout: 10000 });
+
+      // Invited/Expired rows expose a revoke/remove-invitation action; active Members expose "Remove user".
+      const actionItem = menu
+        .getByRole('menuitem', { name: /Revoke invitation|Revoke invite/i })
+        .or(menu.getByRole('menuitem', { name: /Remove invitation/i }))
+        .or(menu.getByRole('menuitem', { name: /^Remove user$/i }))
+        .or(menu.getByRole('menuitem', { name: /Remove|Delete/i }))
+        .first();
+
+      const itemVisible = await actionItem.isVisible({ timeout: 5000 }).catch(() => false);
+      if (!itemVisible) {
+        await page.keyboard.press('Escape').catch(() => {});
+        break;
+      }
+      const actionLabel = ((await actionItem.textContent().catch(() => '')) || '').trim();
+      await actionItem.click();
+
+      const confirmDialog = page.locator('[role="alertdialog"], [role="dialog"]').filter({
+        hasText: /Revoke invitation|Revoke invite|Remove invitation|Remove user|Remove|Delete/i
+      }).first();
+      await expect(confirmDialog).toBeVisible({ timeout: 10000 });
+
+      const confirmBtn = confirmDialog
+        .locator('button:has-text("Revoke"), button:has-text("Remove"), button:has-text("Delete"), button:has-text("Confirm"), button:has-text("Yes")')
+        .first();
+      await confirmBtn.click();
+
+      await confirmDialog.waitFor({ state: 'hidden', timeout: 15000 }).catch(() => {});
+      await page.waitForTimeout(5000);
+
+      removedOnThisPage += 1;
+      totalRemoved += 1;
+      console.log(`[cleanup-fga] Removed user (${actionLabel}): ${rowText.replace(/\n/g, ' | ')}`);
+    }
+
+    const nextVisible = await nextPageBtn.isVisible().catch(() => false);
+    if (!nextVisible) break;
+
+    const nextDisabled = await nextPageBtn.isDisabled().catch(async () => {
+      const ariaDisabled = await nextPageBtn.getAttribute('aria-disabled').catch(() => null);
+      return ariaDisabled === 'true';
+    });
+    if (nextDisabled) break;
+
+    const before = await tableRows.first().innerText().catch(() => '');
+    await nextPageBtn.click();
+    await page.waitForTimeout(10000);
+    const after = await tableRows.first().innerText().catch(() => '');
+
+    if (before === after && removedOnThisPage === 0) break;
+  }
+
+  return totalRemoved;
+}
+
 test.describe('Properties cleanup', () => {
   test('TC261 @cleanup @job Delete all jobs not belonging to protected properties or last created job', async ({ browser }) => {
     test.setTimeout(600000); // 10 min — many jobs may exist
@@ -416,7 +509,6 @@ test.describe('Properties cleanup', () => {
       SAMPLE_PROPERTY_2,
       SAMPLE_PROPERTY_3,
       SAMPLE_PROPERTY_4,
-      SAMPLE_PROPERTY_5,
     ]);
 
     console.log(`[cleanup-jobs] *** ${dryRun ? 'DRY-RUN MODE — nothing will be deleted' : 'LIVE MODE — deletions are real'} ***`);
@@ -519,9 +611,9 @@ test.describe('Properties cleanup', () => {
     test.setTimeout(3600000);
 
     const recent = loadRecentPropertyName();
-    const keep = new Set([SAMPLE_PROPERTY_1, SAMPLE_PROPERTY_2, SAMPLE_PROPERTY_3, SAMPLE_PROPERTY_4, SAMPLE_PROPERTY_5]);
+    const keep = new Set([SAMPLE_PROPERTY_1, SAMPLE_PROPERTY_2, SAMPLE_PROPERTY_3, SAMPLE_PROPERTY_4]);
     if (recent) keep.add(recent);
-    const requiredKeep = new Set([SAMPLE_PROPERTY_1, SAMPLE_PROPERTY_2, SAMPLE_PROPERTY_3, SAMPLE_PROPERTY_4, SAMPLE_PROPERTY_5]);
+    const requiredKeep = new Set([SAMPLE_PROPERTY_1, SAMPLE_PROPERTY_2, SAMPLE_PROPERTY_3, SAMPLE_PROPERTY_4]);
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
     const page = await context.newPage();
@@ -625,6 +717,8 @@ test.describe('Properties cleanup', () => {
         await expect(page).toHaveURL(/tab=invoices/i);
       });
 
+      const createdInvoices = [];
+
       await test.step('Create and confirm 40 invoices in a loop', async () => {
         const totalRuns = 40;
         for (let index = 1; index <= totalRuns; index++) {
@@ -632,7 +726,7 @@ test.describe('Properties cleanup', () => {
           const invoiceTitle = `Automation Invoice ${index}`;
           const invoiceDescription = `Cleanup invoice ${index}`;
 
-          console.log(`[cleanup-invoices] Creating invoice ${index}/${totalRuns}: ${invoiceTitle}`);
+          console.log(`[cleanup-invoices] Creating invoice ${index}/${totalRuns}: ${invoiceTitle} (number: ${invoiceNumber})`);
 
           await invoicePage.clickAddInvoice();
           await page.waitForTimeout(2000);
@@ -643,11 +737,28 @@ test.describe('Properties cleanup', () => {
             invoiceNumber,
           });
 
+          const actualInvoiceNumber = await invoicePage.getInvoiceNumber();
+
           await invoicePage.fillInvoiceGridAmount(100);
           await invoicePage.confirmInvoiceAndHandleModal();
+
+          const record = {
+            index,
+            title: invoiceTitle,
+            description: invoiceDescription,
+            invoiceNumber: actualInvoiceNumber || invoiceNumber,
+          };
+          createdInvoices.push(record);
+          console.log(`[cleanup-invoices] Created invoice ${index}/${totalRuns}: title="${record.title}", invoiceNumber="${record.invoiceNumber}"`);
+
           await invoicePage.goBackToInvoiceList();
           await page.waitForTimeout(2000);
         }
+
+        console.log(`[cleanup-invoices] Summary — ${createdInvoices.length}/${totalRuns} invoice(s) created:`);
+        createdInvoices.forEach((inv) => {
+          console.log(`[cleanup-invoices]   ${inv.index}. "${inv.title}" (invoiceNumber: ${inv.invoiceNumber})`);
+        });
       });
     } finally {
       await context.close().catch((error) => {
@@ -699,6 +810,51 @@ test.describe('Organization pending users cleanup', () => {
         });
       } catch (err) {
         throw new Error(`[cleanup-users] User cleanup failed: ${err?.message || err}`);
+      }
+    } finally {
+      await context.close();
+    }
+  });
+
+  test.skip('TC263 @cleanup @organization Remove/revoke all users matching "fga_activate" regardless of status', async ({ browser }) => {
+    test.setTimeout(600000); // 10 min cap — search narrows the table first, so this should stay well under budget
+
+    const context = await browser.newContext({ storageState: 'sessionState.json' });
+    const page = await context.newPage();
+    const org = new OrganizationHelper(page);
+
+    try {
+      try {
+        await test.step('Open Manage Organization (reuse existing session)', async () => {
+          await org.gotoOrganizationWorkspace();
+          await page.waitForTimeout(10000);
+
+          if ((page.url() || '').includes('/login')) {
+            throw new Error('sessionState.json is not authenticated. Refresh sessionState once, then rerun cleanup.');
+          }
+        });
+
+        await test.step('Search users matching "fga_activate"', async () => {
+          const search = page.locator('input[placeholder="Search by name or e-mail"]').first();
+          await search.waitFor({ state: 'visible', timeout: 15000 });
+          await search.fill('fga_activate');
+          await page.waitForTimeout(5000);
+        });
+
+        await test.step('Remove/revoke matching users regardless of status', async () => {
+          // Per requirement: "fga_activate" accounts are cleaned up even if already Active/Member,
+          // not just Invited/Expired — uses revokeUsersMatchingTextAnyStatus (separate from the
+          // Invited/Expired-only revokeAllInvitedUsersAcrossPages used by TC260).
+          const revokedCount = await revokeUsersMatchingTextAnyStatus(page, 'fga_activate');
+          if (revokedCount === 0) {
+            console.log('[cleanup-fga] No users matching "fga_activate" found.');
+          } else {
+            console.log(`[cleanup-fga] Total "fga_activate" users removed/revoked: ${revokedCount}`);
+          }
+          expect(revokedCount).toBeGreaterThanOrEqual(0);
+        });
+      } catch (err) {
+        throw new Error(`[cleanup-fga] User cleanup failed: ${err?.message || err}`);
       }
     } finally {
       await context.close();

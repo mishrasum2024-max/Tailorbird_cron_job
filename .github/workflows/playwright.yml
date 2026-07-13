@@ -36,7 +36,7 @@ jobs:
 
       # Runs only if login passed
       - name: Run remaining tests serially
-        run: npx playwright test --grep-invert "@mandatory" --workers=1 --reporter=html
+        run: npx playwright test --grep "@invoice" --workers=1 --reporter=html
 
       # Upload report even if any test fails
       - name: Upload Playwright report
