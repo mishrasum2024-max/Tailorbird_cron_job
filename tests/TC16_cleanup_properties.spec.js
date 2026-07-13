@@ -816,7 +816,7 @@ test.describe('Organization pending users cleanup', () => {
     }
   });
 
-  test.skip('TC263 @cleanup @organization Remove/revoke all users matching "fga_activate" regardless of status', async ({ browser }) => {
+  test('TC263 @cleanup @organization Remove/revoke all users matching "fga_activate" regardless of status', async ({ browser }) => {
     test.setTimeout(600000); // 10 min cap — search narrows the table first, so this should stay well under budget
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
