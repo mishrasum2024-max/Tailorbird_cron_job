@@ -7,16 +7,17 @@ const { LoginPage } = require('../pages/loginPage');
 const PropertiesHelper = require('../pages/properties');
 const OrganizationHelper = require('../pages/organizationHelper');
 const { InvoicePage } = require('../pages/invoicePage');
+const { ensureLeftPanelExpanded } = require('../utils/leftPanelExpander');
 const data = require('../fixture/organization.json');
 
 test.use({
-    storageState: 'sessionState.json',
-    video: 'retain-on-failure',
-    trace: 'retain-on-failure',
-    screenshot: 'only-on-failure',
-    animations: 'disabled',
-    maxDiffPixels: 30_000,
-    maxDiffPixelRatio: 0.15,
+  storageState: 'sessionState.json',
+  video: 'retain-on-failure',
+  trace: 'retain-on-failure',
+  screenshot: 'only-on-failure',
+  animations: 'disabled',
+  maxDiffPixels: 30_000,
+  maxDiffPixelRatio: 0.15,
 });
 
 const SAMPLE_PROPERTY_1 = 'Test Property 1_Cottages on Elm';
@@ -70,10 +71,14 @@ function loadLastCreatedJobName() {
 
 /**
  * Navigates to the global Jobs page via the left panel.
- * Expands "Construction Management" if collapsed before clicking "Jobs (Contracts & POs)".
+ * Pins the left panel open first (it now loads as a collapsed icon rail, so
+ * text-based nav locators below won't find visible matches otherwise), then
+ * expands "Construction Management" if collapsed before clicking "Jobs (Contracts & POs)".
  * @param {import('@playwright/test').Page} page
  */
 async function navigateToJobsViaLeftPanel(page) {
+  await ensureLeftPanelExpanded(page);
+
   const nav = page.locator('nav').first();
   await nav.waitFor({ state: 'visible', timeout: 15000 });
 
@@ -222,7 +227,7 @@ async function deleteJobByTitle(page, jobTitle) {
 
   await page.waitForTimeout(10000);
   await page.locator('input[placeholder="Search..."]:not([disabled])').first()
-    .waitFor({ state: 'visible', timeout: 20000 }).catch(() => {});
+    .waitFor({ state: 'visible', timeout: 20000 }).catch(() => { });
   await searchInput.fill('');
   await page.waitForTimeout(5000);
   return true;
@@ -378,7 +383,7 @@ async function revokeAllInvitedUsersAcrossPages(page) {
         .first();
       await confirmBtn.click();
 
-      await confirmDialog.waitFor({ state: 'hidden', timeout: 15000 }).catch(() => {});
+      await confirmDialog.waitFor({ state: 'hidden', timeout: 15000 }).catch(() => { });
       await page.waitForTimeout(5000);
 
       revokedOnThisPage += 1;
@@ -456,7 +461,7 @@ async function revokeUsersMatchingTextAnyStatus(page, matchText) {
 
       const itemVisible = await actionItem.isVisible({ timeout: 5000 }).catch(() => false);
       if (!itemVisible) {
-        await page.keyboard.press('Escape').catch(() => {});
+        await page.keyboard.press('Escape').catch(() => { });
         break;
       }
       const actionLabel = ((await actionItem.textContent().catch(() => '')) || '').trim();
@@ -472,7 +477,7 @@ async function revokeUsersMatchingTextAnyStatus(page, matchText) {
         .first();
       await confirmBtn.click();
 
-      await confirmDialog.waitFor({ state: 'hidden', timeout: 15000 }).catch(() => {});
+      await confirmDialog.waitFor({ state: 'hidden', timeout: 15000 }).catch(() => { });
       await page.waitForTimeout(5000);
 
       removedOnThisPage += 1;
@@ -631,6 +636,7 @@ test.describe('Properties cleanup', () => {
           if ((page.url() || '').includes('/login')) {
             throw new Error('sessionState.json is not authenticated. Refresh sessionState once, then rerun cleanup.');
           }
+          await ensureLeftPanelExpanded(page);
           await prop.goToProperties();
           await prop.changeView('Table View');
         });
@@ -710,7 +716,7 @@ test.describe('Properties cleanup', () => {
     const page = await context.newPage();
     const invoicePage = new InvoicePage(page);
     const targetUrl = process.env.INVOICE_TARGET_URL || 'https://beta.tailorbird.com/jobs/3861?propertyId=6009&tab=invoices';
-
+    
     try {
       await test.step('Open the requested job invoice page', async () => {
         await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
@@ -719,6 +725,7 @@ test.describe('Properties cleanup', () => {
           throw new Error('sessionState.json is not authenticated. Refresh sessionState once, then rerun cleanup.');
         }
         await expect(page).toHaveURL(/tab=invoices/i);
+        await ensureLeftPanelExpanded(page);
       });
 
       const createdInvoices = [];
@@ -779,6 +786,7 @@ test.describe('Organization pending users cleanup', () => {
     const context = await browser.newContext({ storageState: 'sessionState.json' });
     const page = await context.newPage();
     const org = new OrganizationHelper(page);
+    await ensureLeftPanelExpanded(page);
 
     try {
       try {
@@ -826,7 +834,6 @@ test.describe('Organization pending users cleanup', () => {
     const context = await browser.newContext({ storageState: 'sessionState.json' });
     const page = await context.newPage();
     const org = new OrganizationHelper(page);
-
     try {
       try {
         await test.step('Open Manage Organization (reuse existing session)', async () => {
@@ -837,7 +844,7 @@ test.describe('Organization pending users cleanup', () => {
             throw new Error('sessionState.json is not authenticated. Refresh sessionState once, then rerun cleanup.');
           }
         });
-
+        await ensureLeftPanelExpanded(page);
         await test.step('Search users matching "fga_activate"', async () => {
           const search = page.locator('input[placeholder="Search by name or e-mail"]').first();
           await search.waitFor({ state: 'visible', timeout: 15000 });
@@ -865,24 +872,24 @@ test.describe('Organization pending users cleanup', () => {
     }
   });
 
-   test('TC264 @cleanup @organization Remove/revoke all users matching "fga_scope" regardless of status', async ({ browser }) => {
+  test('TC264 @cleanup @organization Remove/revoke all users matching "fga_scope" regardless of status', async ({ browser }) => {
     test.setTimeout(600000); // 10 min cap — search narrows the table first, so this should stay well under budget
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
     const page = await context.newPage();
     const org = new OrganizationHelper(page);
-
     try {
       try {
         await test.step('Open Manage Organization (reuse existing session)', async () => {
           await org.gotoOrganizationWorkspace();
           await page.waitForTimeout(10000);
+          await ensureLeftPanelExpanded(page);
 
           if ((page.url() || '').includes('/login')) {
             throw new Error('sessionState.json is not authenticated. Refresh sessionState once, then rerun cleanup.');
           }
         });
-
+        await ensureLeftPanelExpanded(page);
         await test.step('Search users matching "fga_scope"', async () => {
           const search = page.locator('input[placeholder="Search by name or e-mail"]').first();
           await search.waitFor({ state: 'visible', timeout: 15000 });
