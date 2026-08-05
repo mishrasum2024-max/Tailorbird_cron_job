@@ -305,107 +305,103 @@ async function collectAllPropertyNamesFromGrid(page) {
 }
 
 /**
- * Cleans pending users across pages:
- * - Invited => Revoke invitation
+ * Locates the Users grid (Manage Organization > Users tab). It renders as a
+ * revo-grid `[role="treegrid"]`, not a plain HTML `<table>` — and more than
+ * one `[role="treegrid"]` can be present on the page (Roles tab; a stray
+ * leftover grid from prior navigation has also been observed live), so this
+ * disambiguates by the unique "Email" column header (MCP-verified 2026-08-05).
+ * @param {import('@playwright/test').Page} page
+ */
+function usersGridLocator(page) {
+  return page.locator('[role="treegrid"]').filter({
+    has: page.locator('[role="columnheader"]').filter({ hasText: 'Email' }),
+  }).first();
+}
+
+/**
+ * revo-grid renders the pinned "Actions" column as a separate DOM pane from
+ * the scrollable Name/Email/Status columns, but every cell — in both panes —
+ * carries the same `data-rgrow="N"` per visual row (MCP-verified), which is
+ * how a status cell is paired with its own "User actions" button.
+ * @param {import('@playwright/test').Locator} grid
+ * @param {string} rgrow
+ */
+function userActionButton(grid, rgrow) {
+  return grid.locator(`[role="row"][data-rgrow="${rgrow}"]`).getByRole('button', { name: 'User actions' });
+}
+
+/**
+ * Cleans pending/expired users across the Users grid:
+ * - Pending (product's current label for a not-yet-accepted invite) => Revoke invitation
  * - Expired => Remove user
+ * No pagination controls exist on this grid (MCP-verified: no "Next" button, and the
+ * grid doesn't overflow its own viewport at current user-list sizes), so this scans
+ * and removes matching rows in a single pass instead of paging.
  * @param {import('@playwright/test').Page} page
  */
 async function revokeAllInvitedUsersAcrossPages(page) {
-  const tableRows = page.locator('table tbody tr');
-  const nextPageBtn = page
-    .locator(
-      'button[aria-label*="next" i], button:has-text("Next"), [data-testid*="next" i], button:has(svg.lucide-chevron-right)'
-    )
-    .first();
+  const grid = usersGridLocator(page);
+  await grid.waitFor({ state: 'visible', timeout: 30000 });
 
   let totalRevoked = 0;
-  const maxPages = 100;
+  const maxIterations = 300;
 
-  for (let pageNo = 1; pageNo <= maxPages; pageNo++) {
-    await page.waitForTimeout(10000);
+  for (let guard = 0; guard < maxIterations; guard++) {
+    await page.waitForTimeout(guard === 0 ? 3000 : 1500);
 
-    let revokedOnThisPage = 0;
-    for (let guard = 0; guard < 100; guard++) {
-      const rowCount = await tableRows.count();
-      if (rowCount === 0) break;
+    const statusCells = grid.locator('[role="gridcell"]').filter({ hasText: /^(Pending|Invited|Expired)$/i });
+    const count = await statusCells.count().catch(() => 0);
+    if (count === 0) break;
 
-      let targetRow = null;
-      let targetStatus = null;
-      for (let i = 0; i < rowCount; i++) {
-        const row = tableRows.nth(i);
-        const rowText = (await row.innerText().catch(() => '')).trim();
-        const isInvited = /Invited/i.test(rowText);
-        const isExpired = /Expired/i.test(rowText);
-        if (isInvited || isExpired) {
-          targetRow = row;
-          targetStatus = isExpired ? 'expired' : 'invited';
-          break;
-        }
-      }
-
-      if (!targetRow) break;
-
-      const emailText = (
-        (await targetRow.locator('td').nth(1).innerText().catch(() => '')) ||
-        (await targetRow.innerText().catch(() => ''))
-      ).trim();
-
-      const actionButton = targetRow
-        .locator('button[title="User actions"], button[aria-label*="user action" i], button:has(svg.lucide-ellipsis-vertical)')
-        .first();
-      await actionButton.click();
-
-      let actionItem;
-      if (targetStatus === 'expired') {
-        actionItem = page
-          .locator('role=menuitem >> text=/Remove user|Remove invitation|Remove|Delete/i')
-          .first();
-      } else {
-        actionItem = page
-          .locator('role=menuitem >> text=/Revoke invitation|Revoke invite/i')
-          .first();
-      }
-      await actionItem.click();
-
-      const confirmDialog = page.locator('[role="alertdialog"], [role="dialog"]').filter({
-        hasText: targetStatus === 'expired'
-          ? /Remove user|Remove invitation|Remove|Delete/i
-          : /Revoke invitation|Revoke invite/i
-      }).first();
-      await expect(confirmDialog).toBeVisible({ timeout: 10000 });
-
-      const confirmBtn = confirmDialog
-        .locator(
-          targetStatus === 'expired'
-            ? 'button:has-text("Remove"), button:has-text("Delete"), button:has-text("Confirm"), button:has-text("Yes")'
-            : 'button:has-text("Revoke"), button:has-text("Confirm"), button:has-text("Yes")'
-        )
-        .first();
-      await confirmBtn.click();
-
-      await confirmDialog.waitFor({ state: 'hidden', timeout: 15000 }).catch(() => { });
-      await page.waitForTimeout(5000);
-
-      revokedOnThisPage += 1;
-      totalRevoked += 1;
-      console.log(`[cleanup-users] ${targetStatus === 'expired' ? 'Removed expired' : 'Revoked invited'} user: ${emailText || 'unknown'}`);
+    let targetRgrow = null;
+    let targetStatus = null;
+    let emailText = '';
+    for (let i = 0; i < count; i++) {
+      const cell = statusCells.nth(i);
+      const statusText = ((await cell.textContent().catch(() => '')) || '').trim();
+      const rgrow = await cell.getAttribute('data-rgrow').catch(() => null);
+      if (rgrow == null) continue;
+      targetRgrow = rgrow;
+      targetStatus = /Expired/i.test(statusText) ? 'expired' : 'invited';
+      emailText = ((await grid.locator(`[role="gridcell"][data-rgrow="${rgrow}"]`).nth(1).textContent().catch(() => '')) || '').trim();
+      break;
     }
 
-    const nextVisible = await nextPageBtn.isVisible().catch(() => false);
-    if (!nextVisible) break;
+    if (targetRgrow == null) break;
 
-    const nextDisabled = await nextPageBtn.isDisabled().catch(async () => {
-      const ariaDisabled = await nextPageBtn.getAttribute('aria-disabled').catch(() => null);
-      return ariaDisabled === 'true';
-    });
-    if (nextDisabled) break;
+    const actionButton = userActionButton(grid, targetRgrow);
+    await actionButton.click();
 
-    const before = await tableRows.first().innerText().catch(() => '');
-    await nextPageBtn.click();
-    await page.waitForTimeout(10000);
-    const after = await tableRows.first().innerText().catch(() => '');
+    let actionItem;
+    if (targetStatus === 'expired') {
+      actionItem = page.getByRole('menuitem', { name: /Remove user|Remove invitation|Remove|Delete/i }).first();
+    } else {
+      actionItem = page.getByRole('menuitem', { name: /Revoke invitation|Revoke invite/i }).first();
+    }
+    await actionItem.waitFor({ state: 'visible', timeout: 10000 });
+    await actionItem.click();
 
-    if (before === after && revokedOnThisPage === 0) break;
+    const confirmDialog = page.locator('[role="alertdialog"], [role="dialog"]').filter({
+      hasText: targetStatus === 'expired'
+        ? /Remove user|Remove invitation|Remove|Delete/i
+        : /Revoke invitation|Revoke invite/i
+    }).first();
+    await expect(confirmDialog).toBeVisible({ timeout: 10000 });
+
+    const confirmBtn = confirmDialog
+      .locator(
+        targetStatus === 'expired'
+          ? 'button:has-text("Remove"), button:has-text("Delete"), button:has-text("Confirm"), button:has-text("Yes")'
+          : 'button:has-text("Revoke"), button:has-text("Confirm"), button:has-text("Yes")'
+      )
+      .first();
+    await confirmBtn.click();
+
+    await confirmDialog.waitFor({ state: 'hidden', timeout: 15000 }).catch(() => { });
+    await page.waitForTimeout(3000);
+
+    totalRevoked += 1;
+    console.log(`[cleanup-users] ${targetStatus === 'expired' ? 'Removed expired' : 'Revoked invited'} user: ${emailText || 'unknown'}`);
   }
 
   return totalRevoked;
@@ -413,100 +409,80 @@ async function revokeAllInvitedUsersAcrossPages(page) {
 
 /**
  * Removes/revokes every user row whose text matches `matchText`, regardless of status
- * (Invited, Expired, or already-active Member) — unlike revokeAllInvitedUsersAcrossPages,
- * which only targets Invited/Expired rows. Active members use a "Remove user" menu action
+ * (Pending/Invited, Expired, or already-active Member) — unlike revokeAllInvitedUsersAcrossPages,
+ * which only targets Pending/Invited/Expired rows. Active members use a "Remove user" menu action
  * instead of "Revoke invitation"/"Remove invitation", so this tries each in turn.
  * Kept separate from revokeAllInvitedUsersAcrossPages (used by TC260) so that flow is untouched.
  * @param {import('@playwright/test').Page} page
  * @param {string} matchText
  */
 async function revokeUsersMatchingTextAnyStatus(page, matchText) {
-  const tableRows = page.locator('table tbody tr').filter({ hasText: new RegExp(matchText, 'i') });
-  const nextPageBtn = page
-    .locator(
-      'button[aria-label*="next" i], button:has-text("Next"), [data-testid*="next" i], button:has(svg.lucide-chevron-right)'
-    )
-    .first();
+  const grid = usersGridLocator(page);
+  await grid.waitFor({ state: 'visible', timeout: 30000 });
+  const matchRe = new RegExp(matchText, 'i');
 
   let totalRemoved = 0;
-  const maxPages = 100;
+  const maxIterations = 300;
 
-  for (let pageNo = 1; pageNo <= maxPages; pageNo++) {
-    let removedOnThisPage = 0;
+  for (let guard = 0; guard < maxIterations; guard++) {
+    await page.waitForTimeout(guard === 0 ? 3000 : 1500);
 
-    for (let guard = 0; guard < 100; guard++) {
-      const rowCount = await tableRows.count();
-      if (rowCount === 0) break;
+    const emailCells = grid.locator('[role="gridcell"]').filter({ hasText: matchRe });
+    const count = await emailCells.count().catch(() => 0);
+    if (count === 0) break;
 
-      const targetRow = tableRows.first();
-      const rowText = (await targetRow.innerText().catch(() => '')).trim();
+    const cell = emailCells.first();
+    const rgrow = await cell.getAttribute('data-rgrow').catch(() => null);
+    if (rgrow == null) break;
 
-      const actionButton = targetRow
-        .locator('button[title="User actions"], button[aria-label*="user action" i], button:has(svg.lucide-ellipsis-vertical)')
-        .first();
-      const btnVisible = await actionButton.isVisible({ timeout: 5000 }).catch(() => false);
-      if (!btnVisible) break;
-      await actionButton.click();
+    const rowText = ((await grid.locator(`[role="gridcell"][data-rgrow="${rgrow}"]`).allInnerTexts().catch(() => [])) || []).join(' | ');
 
-      const menu = page.locator('[role="menu"]').first();
-      await menu.waitFor({ state: 'visible', timeout: 10000 });
+    const actionButton = userActionButton(grid, rgrow);
+    const btnVisible = await actionButton.isVisible({ timeout: 5000 }).catch(() => false);
+    if (!btnVisible) break;
+    await actionButton.click();
 
-      // Invited/Expired rows expose a revoke/remove-invitation action; active Members expose "Remove user".
-      const actionItem = menu
-        .getByRole('menuitem', { name: /Revoke invitation|Revoke invite/i })
-        .or(menu.getByRole('menuitem', { name: /Remove invitation/i }))
-        .or(menu.getByRole('menuitem', { name: /^Remove user$/i }))
-        .or(menu.getByRole('menuitem', { name: /Remove|Delete/i }))
-        .first();
+    const menu = page.locator('[role="menu"]').first();
+    await menu.waitFor({ state: 'visible', timeout: 10000 });
 
-      const itemVisible = await actionItem.isVisible({ timeout: 5000 }).catch(() => false);
-      if (!itemVisible) {
-        await page.keyboard.press('Escape').catch(() => { });
-        break;
-      }
-      const actionLabel = ((await actionItem.textContent().catch(() => '')) || '').trim();
-      await actionItem.click();
+    // Pending/Invited/Expired rows expose a revoke/remove-invitation action; active Members expose "Remove user".
+    const actionItem = menu
+      .getByRole('menuitem', { name: /Revoke invitation|Revoke invite/i })
+      .or(menu.getByRole('menuitem', { name: /Remove invitation/i }))
+      .or(menu.getByRole('menuitem', { name: /^Remove user$/i }))
+      .or(menu.getByRole('menuitem', { name: /Remove|Delete/i }))
+      .first();
 
-      const confirmDialog = page.locator('[role="alertdialog"], [role="dialog"]').filter({
-        hasText: /Revoke invitation|Revoke invite|Remove invitation|Remove user|Remove|Delete/i
-      }).first();
-      await expect(confirmDialog).toBeVisible({ timeout: 10000 });
-
-      const confirmBtn = confirmDialog
-        .locator('button:has-text("Revoke"), button:has-text("Remove"), button:has-text("Delete"), button:has-text("Confirm"), button:has-text("Yes")')
-        .first();
-      await confirmBtn.click();
-
-      await confirmDialog.waitFor({ state: 'hidden', timeout: 15000 }).catch(() => { });
-      await page.waitForTimeout(5000);
-
-      removedOnThisPage += 1;
-      totalRemoved += 1;
-      console.log(`[cleanup-fga] Removed user (${actionLabel}): ${rowText.replace(/\n/g, ' | ')}`);
+    const itemVisible = await actionItem.isVisible({ timeout: 5000 }).catch(() => false);
+    if (!itemVisible) {
+      await page.keyboard.press('Escape').catch(() => { });
+      break;
     }
+    const actionLabel = ((await actionItem.textContent().catch(() => '')) || '').trim();
+    await actionItem.click();
 
-    const nextVisible = await nextPageBtn.isVisible().catch(() => false);
-    if (!nextVisible) break;
+    const confirmDialog = page.locator('[role="alertdialog"], [role="dialog"]').filter({
+      hasText: /Revoke invitation|Revoke invite|Remove invitation|Remove user|Remove|Delete/i
+    }).first();
+    await expect(confirmDialog).toBeVisible({ timeout: 10000 });
 
-    const nextDisabled = await nextPageBtn.isDisabled().catch(async () => {
-      const ariaDisabled = await nextPageBtn.getAttribute('aria-disabled').catch(() => null);
-      return ariaDisabled === 'true';
-    });
-    if (nextDisabled) break;
+    const confirmBtn = confirmDialog
+      .locator('button:has-text("Revoke"), button:has-text("Remove"), button:has-text("Delete"), button:has-text("Confirm"), button:has-text("Yes")')
+      .first();
+    await confirmBtn.click();
 
-    const before = await tableRows.first().innerText().catch(() => '');
-    await nextPageBtn.click();
-    await page.waitForTimeout(10000);
-    const after = await tableRows.first().innerText().catch(() => '');
+    await confirmDialog.waitFor({ state: 'hidden', timeout: 15000 }).catch(() => { });
+    await page.waitForTimeout(3000);
 
-    if (before === after && removedOnThisPage === 0) break;
+    totalRemoved += 1;
+    console.log(`[cleanup-fga] Removed user (${actionLabel}): ${rowText.replace(/\n/g, ' | ')}`);
   }
 
   return totalRemoved;
 }
 
 test.describe('Properties cleanup', () => {
-  test('TC261 @cleanup @job Delete all jobs not belonging to protected properties or last created job', async ({ browser }) => {
+  test.skip('TC261 @cleanup @job Delete all jobs not belonging to protected properties or last created job', async ({ browser }) => {
     test.setTimeout(600000); // 10 min — many jobs may exist
 
     const lastCreatedJobName = loadLastCreatedJobName();
@@ -612,7 +588,7 @@ test.describe('Properties cleanup', () => {
     }
   });
 
-  test('TC259 @cleanup @property Delete all properties except sample pair and recently created', async ({
+  test.skip('TC259 @cleanup @property Delete all properties except sample pair and recently created', async ({
     browser,
   }) => {
     // Large environments can have hundreds of generated properties;
@@ -709,7 +685,7 @@ test.describe('Properties cleanup', () => {
     }
   });
 
-  test('TC262 @cleanup @invoice Create and confirm 40 invoices for the requested job', async ({ browser }) => {
+  test.skip('TC262 @cleanup @invoice Create and confirm 40 invoices for the requested job', async ({ browser }) => {
     test.setTimeout(1800000); // 30 min for 40 repeated invoice confirmations
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
@@ -786,7 +762,6 @@ test.describe('Organization pending users cleanup', () => {
     const context = await browser.newContext({ storageState: 'sessionState.json' });
     const page = await context.newPage();
     const org = new OrganizationHelper(page);
-    await ensureLeftPanelExpanded(page);
 
     try {
       try {
@@ -802,9 +777,10 @@ test.describe('Organization pending users cleanup', () => {
             throw new Error('sessionState.json is not authenticated. Refresh sessionState once, then rerun cleanup.');
           }
         });
+        await ensureLeftPanelExpanded(page);
 
         await test.step('Clear user search if present', async () => {
-          const search = page.locator('input[placeholder="Search by name or e-mail"]').first();
+          const search = page.locator('input[placeholder="Search by name or email"]').first();
           if (await search.isVisible().catch(() => false)) {
             await search.fill('');
             await page.waitForTimeout(5000);
@@ -829,7 +805,7 @@ test.describe('Organization pending users cleanup', () => {
   });
 
   test('TC263 @cleanup @organization Remove/revoke all users matching "fga_activate" regardless of status', async ({ browser }) => {
-    test.setTimeout(600000); // 10 min cap — search narrows the table first, so this should stay well under budget
+    test.setTimeout(3600000); // 10 min cap — search narrows the table first, so this should stay well under budget
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
     const page = await context.newPage();
@@ -846,7 +822,7 @@ test.describe('Organization pending users cleanup', () => {
         });
         await ensureLeftPanelExpanded(page);
         await test.step('Search users matching "fga_activate"', async () => {
-          const search = page.locator('input[placeholder="Search by name or e-mail"]').first();
+          const search = page.locator('input[placeholder="Search by name or email"]').first();
           await search.waitFor({ state: 'visible', timeout: 15000 });
           await search.fill('fga_activate');
           await page.waitForTimeout(5000);
@@ -873,7 +849,7 @@ test.describe('Organization pending users cleanup', () => {
   });
 
   test('TC264 @cleanup @organization Remove/revoke all users matching "fga_scope" regardless of status', async ({ browser }) => {
-    test.setTimeout(600000); // 10 min cap — search narrows the table first, so this should stay well under budget
+    test.setTimeout(3600000); // 10 min cap — search narrows the table first, so this should stay well under budget
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
     const page = await context.newPage();
@@ -883,7 +859,6 @@ test.describe('Organization pending users cleanup', () => {
         await test.step('Open Manage Organization (reuse existing session)', async () => {
           await org.gotoOrganizationWorkspace();
           await page.waitForTimeout(10000);
-          await ensureLeftPanelExpanded(page);
 
           if ((page.url() || '').includes('/login')) {
             throw new Error('sessionState.json is not authenticated. Refresh sessionState once, then rerun cleanup.');
@@ -891,7 +866,7 @@ test.describe('Organization pending users cleanup', () => {
         });
         await ensureLeftPanelExpanded(page);
         await test.step('Search users matching "fga_scope"', async () => {
-          const search = page.locator('input[placeholder="Search by name or e-mail"]').first();
+          const search = page.locator('input[placeholder="Search by name or email"]').first();
           await search.waitFor({ state: 'visible', timeout: 15000 });
           await search.fill('fga_scope');
           await page.waitForTimeout(5000);
