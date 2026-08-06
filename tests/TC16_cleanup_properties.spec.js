@@ -559,9 +559,12 @@ async function revokeUsersMatchingTextAnyStatus(page, matchText) {
 
     const rowText = ((await grid.locator(`[role="gridcell"][data-rgrow="${rgrow}"]`).allInnerTexts().catch(() => [])) || []).join(' | ');
 
-    // Pending/Invited/Expired rows expose a revoke/remove-invitation action; active Members expose "Remove user".
+    // Pending/Invited/Expired rows expose "Revoke invitation"; Active members expose
+    // "Revoke access" (MCP-verified 2026-08-06 — confirm dialog: "Revoke access?",
+    // DELETE /api/organization/users/{id}, same endpoint as the invite-revoke path).
+    // "Remove user"/"Remove"/"Delete" kept as fallbacks in case that copy resurfaces.
     const actionButton = userActionButton(grid, rgrow);
-    const menuActionPattern = /Revoke invitation|Revoke invite|Remove invitation|Remove user|Remove|Delete/i;
+    const menuActionPattern = /Revoke invitation|Revoke invite|Revoke access|Remove invitation|Remove user|Remove|Delete/i;
     const { ok, message } = await attemptRevokeRow(
       page,
       actionButton,
@@ -588,7 +591,7 @@ async function revokeUsersMatchingTextAnyStatus(page, matchText) {
   return totalRemoved;
 }
 
-test.describe.skip('Properties cleanup', () => {
+test.describe('Properties cleanup', () => {
   test('TC261 @cleanup @job Delete all jobs not belonging to protected properties or last created job', async ({ browser }) => {
     test.setTimeout(600000); // 10 min — many jobs may exist
 
