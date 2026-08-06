@@ -482,7 +482,7 @@ async function revokeUsersMatchingTextAnyStatus(page, matchText) {
 }
 
 test.describe('Properties cleanup', () => {
-  test.skip('TC261 @cleanup @job Delete all jobs not belonging to protected properties or last created job', async ({ browser }) => {
+  test('TC261 @cleanup @job Delete all jobs not belonging to protected properties or last created job', async ({ browser }) => {
     test.setTimeout(600000); // 10 min — many jobs may exist
 
     const lastCreatedJobName = loadLastCreatedJobName();
@@ -588,7 +588,7 @@ test.describe('Properties cleanup', () => {
     }
   });
 
-  test.skip('TC259 @cleanup @property Delete all properties except sample pair and recently created', async ({
+  test('TC259 @cleanup @property Delete all properties except sample pair and recently created', async ({
     browser,
   }) => {
     // Large environments can have hundreds of generated properties;
@@ -685,7 +685,7 @@ test.describe('Properties cleanup', () => {
     }
   });
 
-  test.skip('TC262 @cleanup @invoice Create and confirm 40 invoices for the requested job', async ({ browser }) => {
+  test('TC262 @cleanup @invoice Create and confirm 40 invoices for the requested job', async ({ browser }) => {
     test.setTimeout(1800000); // 30 min for 40 repeated invoice confirmations
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
