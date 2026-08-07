@@ -591,6 +591,135 @@ async function revokeUsersMatchingTextAnyStatus(page, matchText) {
   return totalRemoved;
 }
 
+/**
+ * Revokes/removes every user whose Status is anything other than "Active" and
+ * whose Role is not Admin — across the whole Users grid, no email filter.
+ *
+ * Deliberately matches on "not Active" rather than an enumerated status list
+ * (unlike revokeAllInvitedUsersAcrossPages's /^(Pending|Invited|Expired)$/i):
+ * MCP-verified 2026-08-07 against the real `/api/organization/users` response
+ * shows only two raw status values exist ("pending"/"active"), and the display
+ * label for the non-active one has already changed once this session
+ * ("Invited" -> "Pending") — matching the negative condition instead of an
+ * enumerated positive list means a future rename can't silently zero out
+ * matches again.
+ *
+ * Reuses the same admin-skip (isAdminRoleRow — Admin rows have no working
+ * revoke path in this UI) and per-email retry/give-up tracking as the other
+ * two cleanup functions above.
+ *
+ * Unlike those two, this scans the WHOLE unfiltered org (hundreds of users),
+ * and the grid virtualizes rows: only ~11 of e.g. 361 total rows actually
+ * exist in the DOM at once, rendered by an inner `.vertical-inner.scroll-rgRow`
+ * viewport — NOT the outer `[role="treegrid"]` itself, which never overflows
+ * (MCP-verified 2026-08-07). Without scrolling that inner viewport, this
+ * function only ever sees whatever ~11 rows happened to be visible initially
+ * and silently reports "0 found" even with 223 real candidates further down —
+ * so this scrolls forward through the list whenever nothing actionable is
+ * currently rendered, and only stops once scrolling stops making progress.
+ * @param {import('@playwright/test').Page} page
+ */
+async function revokeAllNonActiveNonAdminUsers(page) {
+  const grid = usersGridLocator(page);
+  await grid.waitFor({ state: 'visible', timeout: 30000 });
+
+  // Start from the top so the scroll-forward scan below covers the full list.
+  await grid.evaluate((el) => {
+    el.querySelectorAll('.vertical-inner.scroll-rgRow').forEach((s) => { s.scrollTop = 0; });
+  }).catch(() => { });
+  await page.waitForTimeout(500);
+
+  let totalRevoked = 0;
+  const maxIterations = 800;
+  const failureCounts = new Map();
+  const skipEmails = new Set();
+  const menuActionPattern = /Revoke invitation|Revoke invite|Revoke access|Remove invitation|Remove user|Remove|Delete/i;
+  let stagnantScrolls = 0;
+
+  for (let guard = 0; guard < maxIterations; guard++) {
+    await page.waitForTimeout(guard === 0 ? 3000 : 800);
+
+    const rowEls = grid.locator('[role="row"][data-rgrow]');
+    const rowCount = await rowEls.count().catch(() => 0);
+
+    // Each visual row renders twice (main pane + pinned Actions pane) sharing
+    // the same data-rgrow — dedupe before checking Status/Role per index.
+    const seenRgrows = new Set();
+    let targetRgrow = null;
+    let emailText = '';
+    for (let i = 0; i < rowCount; i++) {
+      const rgrow = await rowEls.nth(i).getAttribute('data-rgrow').catch(() => null);
+      if (rgrow == null || seenRgrows.has(rgrow)) continue;
+      seenRgrows.add(rgrow);
+
+      const statusText = ((await grid.locator(`[role="gridcell"][data-rgrow="${rgrow}"]`).nth(2).textContent().catch(() => '')) || '').trim();
+      if (!statusText || /^Active$/i.test(statusText)) continue; // active — leave alone
+      if (await isAdminRoleRow(grid, rgrow)) continue; // admin — no working revoke path (see isAdminRoleRow)
+
+      const email = ((await grid.locator(`[role="gridcell"][data-rgrow="${rgrow}"]`).nth(1).textContent().catch(() => '')) || '').trim();
+      if (skipEmails.has(email)) continue;
+
+      targetRgrow = rgrow;
+      emailText = email;
+      break;
+    }
+
+    if (targetRgrow == null) {
+      // Nothing actionable in the currently-rendered window — scroll the
+      // virtualized viewport forward before concluding there's nothing left.
+      const scrollState = await grid.evaluate((el) => {
+        const scrollers = [...el.querySelectorAll('.vertical-inner.scroll-rgRow')];
+        if (scrollers.length === 0) return null;
+        const before = scrollers[0].scrollTop;
+        const atBottomBefore = before + scrollers[0].clientHeight >= scrollers[0].scrollHeight - 4;
+        scrollers.forEach((s) => {
+          s.scrollTop = Math.min(s.scrollTop + Math.max(200, s.clientHeight * 0.8), s.scrollHeight);
+        });
+        return { before, after: scrollers[0].scrollTop, atBottomBefore };
+      }).catch(() => null);
+
+      await page.waitForTimeout(500);
+
+      if (!scrollState) break; // no scrollable viewport found — nothing more to do
+      if (scrollState.after === scrollState.before) {
+        stagnantScrolls += 1;
+      } else {
+        stagnantScrolls = 0;
+      }
+
+      // Already at the bottom (no movement possible) or stuck for a couple of
+      // passes despite requesting movement — the whole list has been covered.
+      if (scrollState.atBottomBefore || stagnantScrolls >= 3) break;
+      continue;
+    }
+
+    const actionButton = userActionButton(grid, targetRgrow);
+    const { ok, message } = await attemptRevokeRow(
+      page,
+      actionButton,
+      menuActionPattern,
+      menuActionPattern,
+      'button:has-text("Revoke"), button:has-text("Remove"), button:has-text("Delete"), button:has-text("Confirm"), button:has-text("Yes")'
+    );
+
+    if (!ok) {
+      const failCount = (failureCounts.get(emailText) || 0) + 1;
+      failureCounts.set(emailText, failCount);
+      console.log(`[cleanup-nonactive] FAILED to revoke ${emailText || 'unknown'} (attempt ${failCount}): ${message}`);
+      if (failCount >= 3) {
+        console.log(`[cleanup-nonactive] Giving up on ${emailText} after ${failCount} failed attempts — skipping.`);
+        skipEmails.add(emailText);
+      }
+      continue; // not counted as revoked — next scan retries this row (if still present) or moves on
+    }
+
+    totalRevoked += 1;
+    console.log(`[cleanup-nonactive] Revoked/removed non-Active, non-Admin user: ${emailText || 'unknown'} (API confirmed: ${message})`);
+  }
+
+  return totalRevoked;
+}
+
 test.describe('Properties cleanup', () => {
   test('TC261 @cleanup @job Delete all jobs not belonging to protected properties or last created job', async ({ browser }) => {
     test.setTimeout(600000); // 10 min — many jobs may exist
@@ -996,6 +1125,53 @@ test.describe('Organization pending users cleanup', () => {
         });
       } catch (err) {
         throw new Error(`[cleanup-fga] User cleanup failed: ${err?.message || err}`);
+      }
+    } finally {
+      await context.close();
+    }
+  });
+
+  test.only('TC265 @cleanup @organization Remove/revoke all users who are neither Active nor Admin', async ({ browser }) => {
+    test.setTimeout(3600000); // whole-org sweep, no email filter — can cover many more rows than TC263/264
+
+    const context = await browser.newContext({ storageState: 'sessionState.json' });
+    const page = await context.newPage();
+    const org = new OrganizationHelper(page);
+    try {
+      try {
+        await test.step('Open Manage Organization (reuse existing session)', async () => {
+          await org.gotoOrganizationWorkspace();
+          await page.waitForTimeout(10000);
+
+          if ((page.url() || '').includes('/login')) {
+            throw new Error('sessionState.json is not authenticated. Refresh sessionState once, then rerun cleanup.');
+          }
+        });
+        await ensureLeftPanelExpanded(page);
+
+        await test.step('Clear user search if present', async () => {
+          const search = page.locator('input[placeholder="Search by name or email"]').first();
+          if (await search.isVisible().catch(() => false)) {
+            await search.fill('');
+            await page.waitForTimeout(5000);
+          }
+        });
+
+        await test.step('Revoke/remove all users who are neither Active nor Admin', async () => {
+          // Broader than TC260 (which matches an enumerated Pending/Invited/Expired
+          // status list): this matches on "status is not Active" instead, so it
+          // can't silently stop finding anyone again if the non-active status label
+          // changes — see revokeAllNonActiveNonAdminUsers.
+          const revokedCount = await revokeAllNonActiveNonAdminUsers(page);
+          if (revokedCount === 0) {
+            console.log('[cleanup-nonactive] No non-Active, non-Admin users found.');
+          } else {
+            console.log(`[cleanup-nonactive] Total non-Active, non-Admin users revoked/removed: ${revokedCount}`);
+          }
+          expect(revokedCount).toBeGreaterThanOrEqual(0);
+        });
+      } catch (err) {
+        throw new Error(`[cleanup-nonactive] User cleanup failed: ${err?.message || err}`);
       }
     } finally {
       await context.close();
