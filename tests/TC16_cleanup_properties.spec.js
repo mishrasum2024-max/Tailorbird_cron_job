@@ -1131,7 +1131,7 @@ test.describe('Organization pending users cleanup', () => {
     }
   });
 
-  test.only('TC265 @cleanup @organization Remove/revoke all users who are neither Active nor Admin', async ({ browser }) => {
+  test('TC265 @cleanup @organization Remove/revoke all users who are neither Active nor Admin', async ({ browser }) => {
     test.setTimeout(3600000); // whole-org sweep, no email filter — can cover many more rows than TC263/264
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
