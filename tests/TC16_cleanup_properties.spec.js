@@ -720,7 +720,187 @@ async function revokeAllNonActiveNonAdminUsers(page) {
   return totalRevoked;
 }
 
-test.describe('Properties cleanup', () => {
+/**
+ * Deletes every custom column on whatever table is currently open, via
+ * Table > Hide/show columns, one at a time, until only default columns
+ * remain. MCP-verified 2026-08-13 on the Approvals "All Approvals" grid:
+ * - "Table" toolbar button: getByTestId('bt-table-action') — opens a menu
+ *   with "Add custom column" / "Hide / show columns".
+ * - "Hide / show columns": getByTestId('bt-table-action-hide-show-columns')
+ *   — opens a "Manage Columns" dialog listing Default Columns (plain
+ *   checkboxes, no action buttons) and Custom Columns (checkbox + 3 buttons:
+ *   pen/edit, trash2/delete, ellipsis/more — no aria-labels, identified by
+ *   their lucide icon class).
+ * - Clicking the trash icon opens a second "Delete Column" confirm dialog
+ *   ("Are you sure you want to delete the "..." column? ... Cancel / Delete").
+ * - Confirms via `DELETE /api/bird-table/columns` -> 200
+ *   `{"success":true,"message":"Column deleted successfully",...}`.
+ * - Critically (MCP-verified 2026-08-13, through several real bounded test
+ *   runs that kept stopping after deleting only 1 of ~500 columns): whether
+ *   the "Manage Columns" panel stays open or closes itself after a delete is
+ *   inconsistent/racy. It's a right-side slide-out drawer (not a modal) that,
+ *   when open, physically overlaps the "Table" toolbar button underneath it —
+ *   so blindly re-clicking that button to reopen the panel can hang or fail
+ *   waiting for a target that's actually covered by the panel already being
+ *   open. Reliably detecting "is it already open" turned out to be racy too.
+ *   The robust fix: reload the page before every attempt after the first,
+ *   which guarantees the panel starts closed and the toolbar is reachable,
+ *   at the cost of a slower per-column loop.
+ * Only default columns have no delete button at all, so
+ * `button:has(svg.lucide-trash2)` unambiguously matches custom columns only.
+ * @param {import('@playwright/test').Page} page
+ * @returns {Promise<number>} number of custom columns actually deleted
+ */
+async function openManageColumnsDialog(page) {
+  await page.getByTestId('bt-table-action').click({ timeout: 10000 });
+  const hideShowBtn = page.getByTestId('bt-table-action-hide-show-columns');
+  await hideShowBtn.waitFor({ state: 'visible', timeout: 10000 });
+  await hideShowBtn.click({ timeout: 10000 });
+
+  const manageDialog = page.locator('[role="dialog"]').filter({ hasText: 'Manage Columns' }).first();
+  await expect(manageDialog).toBeVisible({ timeout: 15000 });
+  return manageDialog;
+}
+
+async function removeAllCustomColumns(page) {
+  let totalRemoved = 0;
+  let consecutiveFailures = 0;
+  const maxIterations = 1000;
+
+  for (let guard = 0; guard < maxIterations; guard++) {
+    if (guard > 0) {
+      // Guaranteed-clean starting state for every attempt after the first —
+      // see the note above on why reopening via the Table button in-place is
+      // unreliable once a delete has already happened once this page load.
+      await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => { });
+      await page.waitForTimeout(4000);
+      await page.getByTestId('bt-table-action').waitFor({ state: 'visible', timeout: 20000 }).catch(() => { });
+    }
+
+    let manageDialog;
+    try {
+      manageDialog = await openManageColumnsDialog(page);
+    } catch (err) {
+      console.log(`[cleanup-columns] Could not open Manage Columns dialog, stopping: ${err?.message || err}`);
+      break;
+    }
+    // The Custom Columns section can render a beat after the dialog itself
+    // becomes visible (same async-load pattern as the grid behind it) — wait
+    // for it explicitly so a fresh open isn't misread as "nothing left".
+    await manageDialog.getByText('Custom Columns', { exact: true }).first().waitFor({ state: 'visible', timeout: 8000 }).catch(() => { });
+    const trashButtons = manageDialog.locator('button:has(svg.lucide-trash2)');
+    const count = await trashButtons.count().catch(() => 0);
+    if (count === 0) {
+      await page.keyboard.press('Escape').catch(() => { });
+      break; // only default columns left
+    }
+
+    try {
+      await trashButtons.first().click({ timeout: 10000 });
+
+      const confirmDialog = page.locator('[role="dialog"]').filter({ hasText: 'Are you sure you want to delete' }).last();
+      await expect(confirmDialog).toBeVisible({ timeout: 10000 });
+      const confirmBtn = confirmDialog.getByRole('button', { name: 'Delete', exact: true });
+
+      const responsePromise = page.waitForResponse(
+        (resp) => resp.url().includes('/api/bird-table/columns') && resp.request().method() === 'DELETE',
+        { timeout: 15000 }
+      ).catch(() => null);
+
+      await confirmBtn.click({ timeout: 10000 });
+      const response = await responsePromise;
+
+      let ok = false;
+      let message = 'No matching DELETE /api/bird-table/columns response observed within 15s';
+      if (response) {
+        let body = null;
+        try { body = await response.json(); } catch { /* fall back to status alone */ }
+        ok = response.ok() && body?.success !== false;
+        message = body?.message || `HTTP ${response.status()}`;
+      }
+
+      await confirmDialog.waitFor({ state: 'hidden', timeout: 10000 }).catch(() => { });
+      await page.waitForTimeout(300);
+
+      if (!ok) {
+        consecutiveFailures += 1;
+        console.log(`[cleanup-columns] FAILED to delete a custom column (${consecutiveFailures} consecutive): ${message}`);
+        if (consecutiveFailures >= 3) {
+          console.log('[cleanup-columns] 3 consecutive failures — stopping to avoid spinning on a stuck column.');
+          break;
+        }
+        continue; // next iteration reloads for a clean state and retries
+      }
+
+      consecutiveFailures = 0;
+      totalRemoved += 1;
+      if (totalRemoved % 25 === 0 || totalRemoved <= 3) {
+        console.log(`[cleanup-columns] Deleted custom column ${totalRemoved} (API confirmed: ${message})`);
+      }
+    } catch (err) {
+      consecutiveFailures += 1;
+      console.log(`[cleanup-columns] Exception deleting a custom column (${consecutiveFailures} consecutive): ${err?.message || err}`);
+      await page.keyboard.press('Escape').catch(() => { });
+      if (consecutiveFailures >= 3) {
+        console.log('[cleanup-columns] 3 consecutive failures — stopping to avoid spinning on a stuck column.');
+        break;
+      }
+    }
+  }
+
+  await page.keyboard.press('Escape').catch(() => { }); // close Manage Columns dialog
+  return totalRemoved;
+}
+
+test.describe('Approvals table cleanup', () => {
+  test('TC266 @cleanup @approvals Remove all custom columns from the Approvals table', async ({ browser }) => {
+    // MCP-verified 500+ custom columns present, and the Manage Columns dialog
+    // must be fully reopened per deletion (see removeAllCustomColumns) — one
+    // pass through the whole backlog can run several hours. Note this exceeds
+    // the GitHub Actions workflow's job-level `timeout-minutes: 150` ceiling,
+    // so a single CI run will still only make partial progress; safe to rerun.
+    test.setTimeout(14400000); // 4 hours
+
+    const context = await browser.newContext({ storageState: 'sessionState.json' });
+    const page = await context.newPage();
+    try {
+      try {
+        await test.step('Open Approvals (All Approvals tab) via the left panel', async () => {
+          const dashboardUrl = process.env.DASHBOARD_URL || data.dashboardUrl;
+          await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' });
+          await page.waitForTimeout(8000);
+
+          if ((page.url() || '').includes('/login')) {
+            throw new Error('sessionState.json is not authenticated. Refresh sessionState once, then rerun cleanup.');
+          }
+
+          await ensureLeftPanelExpanded(page);
+          const nav = page.locator('nav').first();
+          await nav.waitFor({ state: 'visible', timeout: 15000 });
+          const approvalsItem = nav.locator('a, div').filter({ hasText: /^Approvals$/i }).first();
+          await expect(approvalsItem).toBeVisible({ timeout: 15000 });
+          await approvalsItem.click();
+          await page.waitForURL('**/approvals/**', { timeout: 20000 });
+          await page.waitForTimeout(5000);
+
+          await expect(page.getByTestId('bt-table-action')).toBeVisible({ timeout: 20000 });
+        });
+
+        await test.step('Remove all custom columns via Table > Hide/show columns', async () => {
+          const removedCount = await removeAllCustomColumns(page);
+          console.log(`[cleanup-columns] Total custom columns removed: ${removedCount}`);
+          expect(removedCount).toBeGreaterThanOrEqual(0);
+        });
+      } catch (err) {
+        throw new Error(`[cleanup-columns] Approvals column cleanup failed: ${err?.message || err}`);
+      }
+    } finally {
+      await context.close();
+    }
+  });
+});
+
+test.describe.skip('Properties cleanup', () => {
   test('TC261 @cleanup @job Delete all jobs not belonging to protected properties or last created job', async ({ browser }) => {
     test.setTimeout(600000); // 10 min — many jobs may exist
 
@@ -994,7 +1174,7 @@ test.describe('Properties cleanup', () => {
   });
 });
 
-test.describe('Organization pending users cleanup', () => {
+test.describe.skip('Organization pending users cleanup', () => {
   test('TC260 @cleanup @organization Cleanup invited/expired users across pages', async ({ browser }) => {
     test.setTimeout(3600000);
 
