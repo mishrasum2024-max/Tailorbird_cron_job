@@ -900,7 +900,7 @@ test.describe('Approvals table cleanup', () => {
   });
 });
 
-test.describe.skip('Properties cleanup', () => {
+test.describe('Properties cleanup', () => {
   test('TC261 @cleanup @job Delete all jobs not belonging to protected properties or last created job', async ({ browser }) => {
     test.setTimeout(600000); // 10 min — many jobs may exist
 
@@ -1174,7 +1174,7 @@ test.describe.skip('Properties cleanup', () => {
   });
 });
 
-test.describe.skip('Organization pending users cleanup', () => {
+test.describe('Organization pending users cleanup', () => {
   test('TC260 @cleanup @organization Cleanup invited/expired users across pages', async ({ browser }) => {
     test.setTimeout(3600000);
 
