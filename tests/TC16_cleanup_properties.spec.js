@@ -26,6 +26,7 @@ const SAMPLE_PROPERTY_3 = 'Test Property3 Automation Retainage flow';
 const SAMPLE_PROPERTY_4 = 'Test Property4_Multiapprover_automation';
 const SAMPLE_PROPERTY_5 = 'Test Property5_Reassigning_Automation';
 const SAMPLE_PROPERTY_6 = 'Test Property 6_Draw reporting';
+const SAMPLE_PROPERTY_7 = 'Test_property7_CM_Fee_Automation';
 
 
 /**
@@ -913,6 +914,7 @@ test.describe('Properties cleanup', () => {
       SAMPLE_PROPERTY_4,
       SAMPLE_PROPERTY_5,
       SAMPLE_PROPERTY_6,
+      SAMPLE_PROPERTY_7,
     ]);
 
     console.log(`[cleanup-jobs] *** ${dryRun ? 'DRY-RUN MODE — nothing will be deleted' : 'LIVE MODE — deletions are real'} ***`);
@@ -1015,9 +1017,9 @@ test.describe('Properties cleanup', () => {
     test.setTimeout(3600000);
 
     const recent = loadRecentPropertyName();
-    const keep = new Set([SAMPLE_PROPERTY_1, SAMPLE_PROPERTY_2, SAMPLE_PROPERTY_3, SAMPLE_PROPERTY_4, SAMPLE_PROPERTY_5, SAMPLE_PROPERTY_6]);
+    const keep = new Set([SAMPLE_PROPERTY_1, SAMPLE_PROPERTY_2, SAMPLE_PROPERTY_3, SAMPLE_PROPERTY_4, SAMPLE_PROPERTY_5, SAMPLE_PROPERTY_6, SAMPLE_PROPERTY_7]);
     if (recent) keep.add(recent);
-    const requiredKeep = new Set([SAMPLE_PROPERTY_1, SAMPLE_PROPERTY_2, SAMPLE_PROPERTY_3, SAMPLE_PROPERTY_4, SAMPLE_PROPERTY_5, SAMPLE_PROPERTY_6]);
+    const requiredKeep = new Set([SAMPLE_PROPERTY_1, SAMPLE_PROPERTY_2, SAMPLE_PROPERTY_3, SAMPLE_PROPERTY_4, SAMPLE_PROPERTY_5, SAMPLE_PROPERTY_6, SAMPLE_PROPERTY_7]);
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
     const page = await context.newPage();
