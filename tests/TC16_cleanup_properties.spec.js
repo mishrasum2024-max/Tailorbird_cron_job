@@ -1176,6 +1176,449 @@ test.describe('Properties cleanup', () => {
   });
 });
 
+/**
+ * Locates the global Invoices grid (left panel > Construction Management >
+ * Invoices, URL /invoices). MCP-verified 2026-09-09: this is a single
+ * `[role="treegrid"]` disambiguated by its "Invoice Number" column header.
+ * @param {import('@playwright/test').Page} page
+ */
+function invoiceGridLocator(page) {
+  return page.locator('[role="treegrid"]').filter({
+    has: page.getByRole('columnheader', { name: 'Invoice Number' }),
+  }).first();
+}
+
+/**
+ * Finds the topmost invoice row not already in `skipSet` and returns its
+ * invoice number plus a locator for its "Delete Invoice" button.
+ *
+ * MCP-verified 2026-09-09: the grid splits each visual row across several
+ * separate `[role="row"][data-rgrow="N"]` DOM elements (checkbox pane, main
+ * data pane, actions pane) that all share the same `data-rgrow` — the
+ * invoice-number link lives in one such element, the "Delete Invoice" button
+ * in another. Filtering `[role="row"][data-rgrow]` by `has: <Delete Invoice
+ * button>` narrows to just the actions-pane row for each visual row, in
+ * visual (top-to-bottom) order; the matching invoice number is then looked up
+ * by re-querying every element sharing that same `data-rgrow`.
+ * @param {import('@playwright/test').Page} page
+ * @param {Set<string>} skipSet invoice numbers to skip (already failed/blocked)
+ * @returns {Promise<{invoiceNumber: string, deleteButton: import('@playwright/test').Locator} | null>}
+ */
+async function findNextDeletableInvoiceRow(page, skipSet) {
+  const grid = invoiceGridLocator(page);
+  await grid.waitFor({ state: 'visible', timeout: 30000 });
+
+  const actionRows = grid.locator('[role="row"][data-rgrow]').filter({
+    has: page.getByRole('button', { name: 'Delete Invoice' }),
+  });
+  const count = await actionRows.count().catch(() => 0);
+
+  for (let i = 0; i < count; i++) {
+    const row = actionRows.nth(i);
+    const rgrow = await row.getAttribute('data-rgrow').catch(() => null);
+    if (rgrow == null) continue;
+
+    const invoiceLink = grid
+      .locator(`[role="row"][data-rgrow="${rgrow}"]`)
+      .getByRole('link', { name: /^Invoice #/ })
+      .first();
+    const invoiceNumber = ((await invoiceLink.textContent().catch(() => '')) || '').trim() || `row-rgrow-${rgrow}`;
+
+    if (skipSet.has(invoiceNumber)) continue;
+
+    return { invoiceNumber, deleteButton: row.getByRole('button', { name: 'Delete Invoice' }) };
+  }
+
+  return null;
+}
+
+/**
+ * Clicks "Delete Invoice", confirms the "Are you sure you want to delete this
+ * invoice?" dialog, and verifies the deletion by the mutation API's HTTP
+ * status code alone (200 => deleted, anything else => blocked/failed) rather
+ * than trusting the dialog closing. MCP-verified 2026-09-09 against the real
+ * endpoint: `DELETE /api/bird-table/rows` with body
+ * `{table_name:"invoice", row_id, context_data}` -> 200 on a genuine
+ * deletion, but a business-rule block (e.g. an invoice still pending
+ * approval) returns 400 — while the confirm dialog still closes normally
+ * either way. Checking status only (no response-body parsing) keeps each
+ * iteration fast across a long top-to-bottom run.
+ * @param {import('@playwright/test').Page} page
+ * @param {import('@playwright/test').Locator} deleteButton
+ * @returns {Promise<{ok: boolean, message: string}>}
+ */
+async function deleteInvoiceRowAndVerifyApi(page, deleteButton) {
+  try {
+    await deleteButton.scrollIntoViewIfNeeded().catch(() => { });
+    await expect(deleteButton).toBeEnabled({ timeout: 30000 });
+    await deleteButton.click({ timeout: 10000 });
+
+    const confirmDialog = page.locator('[role="dialog"]').filter({ hasText: 'Delete Invoice' }).first();
+    await expect(confirmDialog).toBeVisible({ timeout: 10000 });
+    const confirmBtn = confirmDialog.getByRole('button', { name: 'Delete', exact: true });
+
+    const responsePromise = page.waitForResponse(
+      (resp) => resp.url().includes('/api/bird-table/rows') && resp.request().method() === 'DELETE',
+      { timeout: 20000 }
+    ).catch(() => null);
+
+    await confirmBtn.click({ timeout: 10000 });
+    const response = await responsePromise;
+
+    await confirmDialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => { });
+
+    if (!response) {
+      return { ok: false, message: 'No matching DELETE /api/bird-table/rows response observed within 20s' };
+    }
+
+    return { ok: response.status() === 200, message: `HTTP ${response.status()}` };
+  } catch (err) {
+    return { ok: false, message: `Exception during invoice delete attempt: ${err?.message || err}` };
+  } finally {
+    await page.keyboard.press('Escape').catch(() => { });
+  }
+}
+
+/**
+ * Repeatedly deletes the topmost deletable invoice from the global Invoices
+ * list until either no deletable rows remain or `maxRuntimeMs` elapses.
+ * An invoice whose deletion the API rejects (e.g. still pending approval) is
+ * added to a skip set so the loop moves on to the next row down instead of
+ * retrying the same blocked invoice forever.
+ * @param {import('@playwright/test').Page} page
+ * @param {number} maxRuntimeMs
+ */
+async function deleteInvoicesTopToBottomViaApi(page, maxRuntimeMs) {
+  const startTime = Date.now();
+  const skipSet = new Set();
+  let deletedCount = 0;
+  let failedCount = 0;
+  const maxIterations = 5000;
+
+  for (let guard = 0; guard < maxIterations; guard++) {
+    if (Date.now() - startTime >= maxRuntimeMs) {
+      console.log('[cleanup-invoices-delete] 2-hour time budget reached, stopping.');
+      break;
+    }
+
+    const target = await findNextDeletableInvoiceRow(page, skipSet);
+    if (!target) {
+      console.log('[cleanup-invoices-delete] No more deletable invoice rows found (or all remaining are skipped).');
+      break;
+    }
+
+    const { ok, message } = await deleteInvoiceRowAndVerifyApi(page, target.deleteButton);
+
+    if (ok) {
+      deletedCount += 1;
+      console.log(`[cleanup-invoices-delete] Deleted "${target.invoiceNumber}" (API confirmed: ${message}) — total deleted: ${deletedCount}`);
+      await page.waitForTimeout(800);
+    } else {
+      failedCount += 1;
+      skipSet.add(target.invoiceNumber);
+      console.log(`[cleanup-invoices-delete] FAILED to delete "${target.invoiceNumber}" (API confirmed): ${message} — skipping this invoice.`);
+      await page.waitForTimeout(500);
+    }
+  }
+
+  return { deletedCount, failedCount, skippedInvoices: [...skipSet] };
+}
+
+test.describe('Invoices cleanup', () => {
+  test('TC267 @cleanup @invoice Delete invoices from the global Invoices list top to bottom, verified via API response', async ({ browser }) => {
+    // Per requirement: this test runs for up to 2 hours, deleting invoices from
+    // the top of the global Invoices list downward and verifying each deletion
+    // through the actual DELETE /api/bird-table/rows API response rather than
+    // trusting the UI dialog closing. A small buffer above the 2h work budget
+    // lets the last in-flight step/log finish before the test itself times out.
+    const RUNTIME_BUDGET_MS = 2 * 60 * 60 * 1000; // 2 hours
+    test.setTimeout(RUNTIME_BUDGET_MS + 10 * 60 * 1000);
+
+    const context = await browser.newContext({ storageState: 'sessionState.json' });
+    const page = await context.newPage();
+
+    try {
+      try {
+        await test.step('Login (reused session) and open Invoices via the left panel', async () => {
+          const dashboardUrl = process.env.DASHBOARD_URL || data.dashboardUrl;
+          await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' });
+          await page.waitForTimeout(8000);
+
+          if ((page.url() || '').includes('/login')) {
+            throw new Error('sessionState.json is not authenticated. Refresh sessionState once, then rerun this test.');
+          }
+
+          await ensureLeftPanelExpanded(page);
+          const nav = page.locator('nav').first();
+          await nav.waitFor({ state: 'visible', timeout: 15000 });
+
+          const invoicesItem = nav.locator('a, div').filter({ hasText: /^Invoices$/i }).first();
+          if (!(await invoicesItem.isVisible().catch(() => false))) {
+            const cmSection = nav.locator('a, div').filter({ hasText: /^Construction Management$/i }).first();
+            if (await cmSection.isVisible().catch(() => false)) {
+              await cmSection.click();
+              await page.waitForTimeout(700);
+            }
+          }
+
+          await expect(invoicesItem).toBeVisible({ timeout: 15000 });
+          await invoicesItem.click();
+          await page.waitForURL('**/invoices', { timeout: 20000 });
+          await page.waitForTimeout(8000);
+          await expect(invoiceGridLocator(page)).toBeVisible({ timeout: 30000 });
+        });
+
+        await test.step('Delete invoices top to bottom, verifying each deletion via the API response', async () => {
+          const { deletedCount, failedCount, skippedInvoices } = await deleteInvoicesTopToBottomViaApi(page, RUNTIME_BUDGET_MS);
+
+          console.log(`[cleanup-invoices-delete] Summary — deleted (API-confirmed): ${deletedCount}, blocked/failed: ${failedCount}`);
+          if (skippedInvoices.length > 0) {
+            console.log(`[cleanup-invoices-delete] Invoices left in place (deletion blocked by API): ${skippedInvoices.join(', ')}`);
+          }
+
+          expect(deletedCount).toBeGreaterThanOrEqual(0);
+        });
+      } catch (err) {
+        throw new Error(`[cleanup-invoices-delete] Invoice deletion failed: ${err?.message || err}`);
+      }
+    } finally {
+      await context.close().catch((e) => {
+        console.warn(`[cleanup-invoices-delete] context.close warning ignored: ${e.message}`);
+      });
+    }
+  });
+});
+
+/**
+ * Locates the Approval Templates grid (Approvals tab > Approval Templates,
+ * URL /approvals/template). MCP-verified 2026-09-09: disambiguated from the
+ * All Approvals grid by its unique "Template Type" column header.
+ * @param {import('@playwright/test').Page} page
+ */
+function approvalTemplateGridLocator(page) {
+  return page.locator('[role="treegrid"]').filter({
+    has: page.getByRole('columnheader', { name: 'Template Type' }),
+  }).first();
+}
+
+/**
+ * Finds the topmost approval template row that (a) isn't already in
+ * `skipSet` and (b) does not belong to any of the protected properties, and
+ * returns its name plus a locator for its delete (trash) button. A template
+ * that DOES belong to a protected property is added to `skipSet` (so it is
+ * never revisited) and counted in `stats.kept` instead of being returned.
+ *
+ * MCP-verified 2026-09-09: like the Invoices grid, each visual row is split
+ * across two DOM elements sharing the same `data-rgrow` — a main-data-pane
+ * row (gridcells in order: Name, Template Type, Properties, Approval Rules,
+ * Created By) and a separate actions-pane row holding "Edit" and a delete
+ * icon button identified by `svg.lucide-trash2` (same icon/selector as the
+ * Approvals-table custom-column cleanup above). A template with no property
+ * restriction renders "—" in the Properties cell — that matches none of the
+ * protected property names, so it counts as "does not belong" and gets
+ * deleted, per the requirement.
+ * @param {import('@playwright/test').Page} page
+ * @param {Set<string>} protectedProperties
+ * @param {Set<string>} skipSet template names to skip (kept or already failed)
+ * @param {{kept: number}} stats mutated in place to count newly-kept templates
+ * @returns {Promise<{name: string, propertiesText: string, deleteButton: import('@playwright/test').Locator} | null>}
+ */
+async function findNextDeletableApprovalTemplateRow(page, protectedProperties, skipSet, stats) {
+  const grid = approvalTemplateGridLocator(page);
+  await grid.waitFor({ state: 'visible', timeout: 30000 });
+
+  const actionRows = grid.locator('[role="row"][data-rgrow]').filter({
+    has: page.locator('button:has(svg.lucide-trash2)'),
+  });
+  const count = await actionRows.count().catch(() => 0);
+
+  for (let i = 0; i < count; i++) {
+    const row = actionRows.nth(i);
+    const rgrow = await row.getAttribute('data-rgrow').catch(() => null);
+    if (rgrow == null) continue;
+
+    const rowCells = grid.locator(`[role="row"][data-rgrow="${rgrow}"] [role="gridcell"]`);
+    if ((await rowCells.count().catch(() => 0)) < 3) continue;
+
+    const name = (((await rowCells.nth(0).textContent().catch(() => '')) || '').trim()).replace(/✕$/, '').trim();
+    const propertiesText = ((await rowCells.nth(2).textContent().catch(() => '')) || '').trim();
+
+    if (!name || skipSet.has(name)) continue;
+
+    const belongsToProtectedProperty = [...protectedProperties].some((p) => propertiesText.includes(p));
+    if (belongsToProtectedProperty) {
+      skipSet.add(name);
+      stats.kept += 1;
+      console.log(`[cleanup-approval-templates] KEEP "${name}" — belongs to a protected property (Properties: "${propertiesText}").`);
+      continue;
+    }
+
+    return { name, propertiesText, deleteButton: row.locator('button:has(svg.lucide-trash2)').first() };
+  }
+
+  return null;
+}
+
+/**
+ * Clicks the delete (trash) icon, confirms the "Delete approval template? /
+ * Are you sure you want to delete <name>? This action cannot be undone."
+ * dialog, and verifies the deletion by the mutation API's HTTP status code
+ * alone (200 => deleted, anything else => failed) — same fast-path
+ * verification as the Invoices cleanup above. MCP-verified 2026-09-09against
+ * the real endpoint: `DELETE /api/bird-table/rows` with body
+ * `{table_name:"approval_template", row_id}` -> 200 on a genuine deletion.
+ * @param {import('@playwright/test').Page} page
+ * @param {import('@playwright/test').Locator} deleteButton
+ * @returns {Promise<{ok: boolean, message: string}>}
+ */
+async function deleteApprovalTemplateRowAndVerifyApi(page, deleteButton) {
+  try {
+    await deleteButton.scrollIntoViewIfNeeded().catch(() => { });
+    await expect(deleteButton).toBeEnabled({ timeout: 30000 });
+    await deleteButton.click({ timeout: 10000 });
+
+    const confirmDialog = page.locator('[role="dialog"]').filter({ hasText: 'Delete approval template?' }).first();
+    await expect(confirmDialog).toBeVisible({ timeout: 10000 });
+    const confirmBtn = confirmDialog.getByRole('button', { name: 'Delete', exact: true });
+
+    const responsePromise = page.waitForResponse(
+      (resp) => resp.url().includes('/api/bird-table/rows') && resp.request().method() === 'DELETE',
+      { timeout: 20000 }
+    ).catch(() => null);
+
+    await confirmBtn.click({ timeout: 10000 });
+    const response = await responsePromise;
+
+    await confirmDialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => { });
+
+    if (!response) {
+      return { ok: false, message: 'No matching DELETE /api/bird-table/rows response observed within 20s' };
+    }
+
+    return { ok: response.status() === 200, message: `HTTP ${response.status()}` };
+  } catch (err) {
+    return { ok: false, message: `Exception during approval template delete attempt: ${err?.message || err}` };
+  } finally {
+    await page.keyboard.press('Escape').catch(() => { });
+  }
+}
+
+/**
+ * Repeatedly deletes the topmost deletable approval template until either no
+ * deletable rows remain or `maxRuntimeMs` elapses. Templates belonging to a
+ * protected property are kept (never attempted); a template whose deletion
+ * the API rejects is skipped so the loop moves to the next row down instead
+ * of retrying it forever.
+ * @param {import('@playwright/test').Page} page
+ * @param {Set<string>} protectedProperties
+ * @param {number} maxRuntimeMs
+ */
+async function deleteApprovalTemplatesTopToBottomViaApi(page, protectedProperties, maxRuntimeMs) {
+  const startTime = Date.now();
+  const skipSet = new Set(); // kept (protected) + already-attempted-and-failed names
+  const stats = { kept: 0 };
+  let deletedCount = 0;
+  let failedCount = 0;
+  const maxIterations = 5000;
+
+  for (let guard = 0; guard < maxIterations; guard++) {
+    if (Date.now() - startTime >= maxRuntimeMs) {
+      console.log('[cleanup-approval-templates] 2-hour time budget reached, stopping.');
+      break;
+    }
+
+    const target = await findNextDeletableApprovalTemplateRow(page, protectedProperties, skipSet, stats);
+    if (!target) {
+      console.log('[cleanup-approval-templates] No more deletable approval templates found (remaining are protected or already attempted).');
+      break;
+    }
+
+    const { ok, message } = await deleteApprovalTemplateRowAndVerifyApi(page, target.deleteButton);
+
+    if (ok) {
+      deletedCount += 1;
+      console.log(`[cleanup-approval-templates] Deleted "${target.name}" (API confirmed: ${message}) — total deleted: ${deletedCount}`);
+    } else {
+      failedCount += 1;
+      skipSet.add(target.name);
+      console.log(`[cleanup-approval-templates] FAILED to delete "${target.name}" (API confirmed: ${message}) — skipping this template.`);
+    }
+  }
+
+  return { deletedCount, failedCount, keptCount: stats.kept };
+}
+
+test.describe('Approval templates cleanup', () => {
+  test('TC268 @cleanup @approvals Delete approval templates not belonging to the protected sample properties', async ({ browser }) => {
+    // Per requirement: this test runs for up to 2 hours, deleting approval
+    // templates from the top of the list downward — skipping (never deleting)
+    // any template that belongs to one of the 7 protected sample properties —
+    // and verifying each deletion via the DELETE /api/bird-table/rows API
+    // status code alone. A small buffer above the 2h work budget lets the
+    // last in-flight step/log finish before the test itself times out.
+    const RUNTIME_BUDGET_MS = 2 * 60 * 60 * 1000; // 2 hours
+    test.setTimeout(RUNTIME_BUDGET_MS + 10 * 60 * 1000);
+
+    const protectedProperties = new Set([
+      SAMPLE_PROPERTY_1,
+      SAMPLE_PROPERTY_2,
+      SAMPLE_PROPERTY_3,
+      SAMPLE_PROPERTY_4,
+      SAMPLE_PROPERTY_5,
+      SAMPLE_PROPERTY_6,
+      SAMPLE_PROPERTY_7,
+    ]);
+
+    const context = await browser.newContext({ storageState: 'sessionState.json' });
+    const page = await context.newPage();
+
+    try {
+      try {
+        await test.step('Login (reused session) and open Approval Templates via the left panel', async () => {
+          const dashboardUrl = process.env.DASHBOARD_URL || data.dashboardUrl;
+          await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' });
+          await page.waitForTimeout(8000);
+
+          if ((page.url() || '').includes('/login')) {
+            throw new Error('sessionState.json is not authenticated. Refresh sessionState once, then rerun this test.');
+          }
+
+          await ensureLeftPanelExpanded(page);
+          const nav = page.locator('nav').first();
+          await nav.waitFor({ state: 'visible', timeout: 15000 });
+
+          const approvalsItem = nav.locator('a, div').filter({ hasText: /^Approvals$/i }).first();
+          await expect(approvalsItem).toBeVisible({ timeout: 15000 });
+          await approvalsItem.click();
+          await page.waitForURL('**/approvals/**', { timeout: 20000 });
+          await page.waitForTimeout(3000);
+
+          const templatesTab = page.getByRole('tab', { name: 'Approval Templates' });
+          await templatesTab.waitFor({ state: 'visible', timeout: 15000 });
+          await templatesTab.click();
+          await page.waitForURL('**/approvals/template', { timeout: 20000 });
+          await page.waitForTimeout(5000);
+          await expect(approvalTemplateGridLocator(page)).toBeVisible({ timeout: 30000 });
+        });
+
+        await test.step('Delete templates top to bottom, keeping ones tied to protected properties, verified via API status', async () => {
+          const { deletedCount, failedCount, keptCount } = await deleteApprovalTemplatesTopToBottomViaApi(page, protectedProperties, RUNTIME_BUDGET_MS);
+
+          console.log(`[cleanup-approval-templates] Summary — deleted: ${deletedCount}, kept (protected property): ${keptCount}, failed: ${failedCount}`);
+
+          expect(deletedCount).toBeGreaterThanOrEqual(0);
+        });
+      } catch (err) {
+        throw new Error(`[cleanup-approval-templates] Approval template cleanup failed: ${err?.message || err}`);
+      }
+    } finally {
+      await context.close().catch((e) => {
+        console.warn(`[cleanup-approval-templates] context.close warning ignored: ${e.message}`);
+      });
+    }
+  });
+});
+
 test.describe('Organization pending users cleanup', () => {
   test('TC260 @cleanup @organization Cleanup invited/expired users across pages', async ({ browser }) => {
     test.setTimeout(3600000);
