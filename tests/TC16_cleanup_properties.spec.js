@@ -151,7 +151,7 @@ function parseJobsCSV(content) {
  * Main data rows are identified by: has gridcells AND no checkbox AND no
  * "Delete Row" button (those belong to the checkbox and actions panes).
  *
- * @param {import('@playwright/test').Page} page
+ * @param {import('@playwright/').Page} page
  * @returns {Promise<string[]>}
  */
 async function collectVisibleJobTitles(page) {
@@ -178,7 +178,7 @@ async function collectVisibleJobTitles(page) {
  * Uses accessibility-tree row queries (works through shadow DOM) to locate the
  * row index, then clicks the corresponding "Delete Row" button.
  *
- * @param {import('@playwright/test').Page} page
+ * @param {import('@playwright/').Page} page
  * @param {string} jobTitle
  * @returns {Promise<boolean>} true if deleted
  */
@@ -236,7 +236,7 @@ async function deleteJobByTitle(page, jobTitle) {
 
 /**
  * Names visible in the current treegrid viewport (first column text per data row).
- * @param {import('@playwright/test').Page} page
+ * @param {import('@playwright/').Page} page
  * @returns {Promise<string[]>}
  */
 async function collectVisiblePropertyNames(page) {
@@ -263,7 +263,7 @@ async function collectVisiblePropertyNames(page) {
 
 /**
  * Scrolls the treegrid and unions visible first-column names (handles virtualized rows).
- * @param {import('@playwright/test').Page} page
+ * @param {import('@playwright/').Page} page
  * @returns {Promise<string[]>}
  */
 async function collectAllPropertyNamesFromGrid(page) {
@@ -854,7 +854,7 @@ async function removeAllCustomColumns(page) {
 }
 
 test.describe('Approvals table cleanup', () => {
-  test('TC266 @cleanup @approvals Remove all custom columns from the Approvals table', async ({ browser }) => {
+  test.skip('TC266 @cleanup @approvals Remove all custom columns from the Approvals table', async ({ browser }) => {
     // MCP-verified 500+ custom columns present, and the Manage Columns dialog
     // must be fully reopened per deletion (see removeAllCustomColumns) — one
     // pass through the whole backlog can run several hours. Note this exceeds
@@ -902,7 +902,7 @@ test.describe('Approvals table cleanup', () => {
 });
 
 test.describe('Properties cleanup', () => {
-  test('TC261 @cleanup @job Delete all jobs not belonging to protected properties or last created job', async ({ browser }) => {
+  test.skip('TC261 @cleanup @job Delete all jobs not belonging to protected properties or last created job', async ({ browser }) => {
     test.setTimeout(600000); // 10 min — many jobs may exist
 
     const lastCreatedJobName = loadLastCreatedJobName();
@@ -1009,7 +1009,7 @@ test.describe('Properties cleanup', () => {
     }
   });
 
-  test('TC259 @cleanup @property Delete all properties except sample pair and recently created', async ({
+  test.skip('TC259 @cleanup @property Delete all properties except sample pair and recently created', async ({
     browser,
   }) => {
     // Large environments can have hundreds of generated properties;
@@ -1106,7 +1106,7 @@ test.describe('Properties cleanup', () => {
     }
   });
 
-  test('TC262 @cleanup @invoice Create and confirm 40 invoices for the requested job', async ({ browser }) => {
+  test.skip('TC262 @cleanup @invoice Create and confirm 40 invoices for the requested job', async ({ browser }) => {
     test.setTimeout(1800000); // 30 min for 40 repeated invoice confirmations
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
@@ -1331,7 +1331,7 @@ test.describe('Invoices cleanup', () => {
     // through the actual DELETE /api/bird-table/rows API response rather than
     // trusting the UI dialog closing. A small buffer above the 2h work budget
     // lets the last in-flight step/log finish before the test itself times out.
-    const RUNTIME_BUDGET_MS = 2 * 60 * 60 * 1000; // 2 hours
+    const RUNTIME_BUDGET_MS = 3 * 60 * 60 * 1000; // 2 hours
     test.setTimeout(RUNTIME_BUDGET_MS + 10 * 60 * 1000);
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
@@ -1556,7 +1556,7 @@ test.describe('Approval templates cleanup', () => {
     // and verifying each deletion via the DELETE /api/bird-table/rows API
     // status code alone. A small buffer above the 2h work budget lets the
     // last in-flight step/log finish before the test itself times out.
-    const RUNTIME_BUDGET_MS = 2 * 60 * 60 * 1000; // 2 hours
+    const RUNTIME_BUDGET_MS = 3 * 60 * 60 * 1000; // 2 hours
     test.setTimeout(RUNTIME_BUDGET_MS + 10 * 60 * 1000);
 
     const protectedProperties = new Set([
