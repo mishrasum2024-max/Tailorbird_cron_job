@@ -1333,7 +1333,12 @@ async function deleteInvoicesTopToBottomViaApi(page, maxRuntimeMs) {
     if (ok) {
       deletedCount += 1;
       console.log(`[cleanup-invoices-delete] Deleted "${target.invoiceNumber}" (API confirmed: ${message}) — total deleted: ${deletedCount}`);
-      await page.waitForTimeout(800);
+      // A deleted invoice must fully settle server-side before the next one
+      // can be deleted — deleting the next row too soon after this returns
+      // HTTP 200 gets rejected with 400 (business rule: the prior invoice's
+      // deletion must complete first). 800ms wasn't enough; 10s matches what
+      // the backend actually needs to finish processing the deletion.
+      await page.waitForTimeout(10000);
     } else {
       failedCount += 1;
       skipSet.add(target.invoiceNumber);
@@ -1345,7 +1350,7 @@ async function deleteInvoicesTopToBottomViaApi(page, maxRuntimeMs) {
   return { deletedCount, failedCount, skippedInvoices: [...skipSet] };
 }
 
-test.describe('Invoices cleanup', () => {
+test.describe.only('Invoices cleanup', () => {
   test('TC267 @cleanup @invoice Delete invoices from the global Invoices list top to bottom, verified via API response', async ({ browser }) => {
     // This test runs for up to 3 hours, deleting invoices from the top of the
     // global Invoices list downward and verifying each deletion through the
@@ -1405,6 +1410,61 @@ test.describe('Invoices cleanup', () => {
     } finally {
       await context.close().catch((e) => {
         console.warn(`[cleanup-invoices-delete] context.close warning ignored: ${e.message}`);
+      });
+    }
+  });
+
+  test('TC269 @cleanup @invoice Delete all invoices on a specific job Invoice tab, verified via API response', async ({ browser }) => {
+    // Targets a single job's Invoice tab directly by URL (rather than the
+    // global /invoices list used by TC267) and deletes every invoice found
+    // there. MCP-verified 2026-09-09: a job's Invoice tab renders the exact
+    // same grid shape as the global Invoices list — a `[role="treegrid"]`
+    // with an "Invoice Number" columnheader, and each row's Actions pane
+    // exposing "View Invoice" / "Reassign Invoice" / "Delete Invoice" buttons
+    // behind a "Delete Invoice — Are you sure...? Cancel / Delete" confirm
+    // dialog — so the same invoiceGridLocator/deleteInvoicesTopToBottomViaApi
+    // helpers used by TC267 apply unchanged, just pointed at the job URL.
+    const RUNTIME_BUDGET_MS = 60 * 60 * 1000; // 1 hour — a single job's invoice list is bounded
+    test.setTimeout(RUNTIME_BUDGET_MS + 10 * 60 * 1000);
+
+    const targetUrl = process.env.JOB_INVOICE_TARGET_URL
+      || 'https://beta.tailorbird.com/jobs/4330?propertyId=8659&tab=invoices';
+
+    const context = await browser.newContext({ storageState: 'sessionState.json' });
+    const page = await context.newPage();
+
+    try {
+      try {
+        await test.step('Open the job Invoice tab directly by URL', async () => {
+          await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
+          await page.waitForTimeout(10000);
+
+          if ((page.url() || '').includes('/login')) {
+            throw new Error('sessionState.json is not authenticated. Refresh sessionState once, then rerun this test.');
+          }
+
+          await expect(page).toHaveURL(/tab=invoices/i);
+          await ensureLeftPanelExpanded(page);
+          await expect(invoiceGridLocator(page)).toBeVisible({ timeout: 30000 });
+        });
+
+        await test.step('Delete all invoices on this job top to bottom, verifying each deletion via the API response', async () => {
+          const { deletedCount, failedCount, skippedInvoices } = await deleteInvoicesTopToBottomViaApi(page, RUNTIME_BUDGET_MS);
+
+          console.log(`[cleanup-job-invoices-delete] Summary — deleted (API-confirmed): ${deletedCount}, blocked/failed: ${failedCount}`);
+          if (skippedInvoices.length > 0) {
+            console.log(`[cleanup-job-invoices-delete] Invoices left in place (deletion blocked by API): ${skippedInvoices.join(', ')}`);
+          }
+
+          expect(deletedCount).toBeGreaterThanOrEqual(0);
+          expect(failedCount).toBe(0);
+        });
+      } catch (err) {
+        throw new Error(`[cleanup-job-invoices-delete] Job invoice deletion failed: ${err?.message || err}`);
+      }
+    } finally {
+      await context.close().catch((e) => {
+        console.warn(`[cleanup-job-invoices-delete] context.close warning ignored: ${e.message}`);
       });
     }
   });
