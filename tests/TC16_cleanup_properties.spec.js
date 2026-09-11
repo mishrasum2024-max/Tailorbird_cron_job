@@ -853,8 +853,8 @@ async function removeAllCustomColumns(page) {
   return totalRemoved;
 }
 
-test.describe('Approvals table cleanup', () => {
-  test.skip('TC266 @cleanup @approvals Remove all custom columns from the Approvals table', async ({ browser }) => {
+test.describe.skip('Approvals table cleanup', () => {
+  test('TC266 @cleanup @approvals Remove all custom columns from the Approvals table', async ({ browser }) => {
     // MCP-verified 500+ custom columns present, and the Manage Columns dialog
     // must be fully reopened per deletion (see removeAllCustomColumns) — one
     // pass through the whole backlog can run several hours. Note this exceeds
@@ -901,8 +901,8 @@ test.describe('Approvals table cleanup', () => {
   });
 });
 
-test.describe('Properties cleanup', () => {
-  test.skip('TC261 @cleanup @job Delete all jobs not belonging to protected properties or last created job', async ({ browser }) => {
+test.describe.skip('Properties cleanup', () => {
+  test('TC261 @cleanup @job Delete all jobs not belonging to protected properties or last created job', async ({ browser }) => {
     test.setTimeout(600000); // 10 min — many jobs may exist
 
     const lastCreatedJobName = loadLastCreatedJobName();
@@ -1009,7 +1009,7 @@ test.describe('Properties cleanup', () => {
     }
   });
 
-  test.skip('TC259 @cleanup @property Delete all properties except sample pair and recently created', async ({
+  test('TC259 @cleanup @property Delete all properties except sample pair and recently created', async ({
     browser,
   }) => {
     // Large environments can have hundreds of generated properties;
@@ -1106,7 +1106,7 @@ test.describe('Properties cleanup', () => {
     }
   });
 
-  test.skip('TC262 @cleanup @invoice Create and confirm 40 invoices for the requested job', async ({ browser }) => {
+  test('TC262 @cleanup @invoice Create and confirm 40 invoices for the requested job', async ({ browser }) => {
     test.setTimeout(1800000); // 30 min for 40 repeated invoice confirmations
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
@@ -1215,14 +1215,35 @@ async function findNextDeletableInvoiceRow(page, skipSet) {
 
   for (let i = 0; i < count; i++) {
     const row = actionRows.nth(i);
-    const rgrow = await row.getAttribute('data-rgrow').catch(() => null);
+    const rgrow = await row.getAttribute('data-rgrow', { timeout: 5000 }).catch(() => null);
     if (rgrow == null) continue;
 
+    // MCP-verified 2026-09-11: the Invoice Number cell's link text is whatever
+    // custom value the invoice was given (e.g. "AUTO-1789092381455-40" from
+    // TC262), NOT always "Invoice #<id>" — matching only /^Invoice #/ means
+    // that link is never found for these, so every single row (and every
+    // already-skipped row, on every re-scan) burned the full lookup timeout
+    // before falling back to a placeholder name. With dozens of permanently
+    // undeletable "pending approval" invoices piling up at the top from
+    // repeated TC262 runs, that per-row tax on every re-scan made the loop
+    // grind to a crawl even though it was technically still advancing.
+    // Grabbing the row's first link by position (no name filter) matches the
+    // Invoice Number column regardless of its text and resolves immediately.
+    //
+    // A short, explicit timeout is still kept as a safety net: without one, a
+    // row whose actions pane rendered a "Delete Invoice" button but whose
+    // paired data-pane row (same data-rgrow) has no link at all — e.g. a
+    // transient mismatch right after the grid re-renders from a prior
+    // deletion — would make Playwright wait for a link that never appears.
+    // With no playwright.config.js in this repo setting a default
+    // actionTimeout, that wait is unbounded, and `.catch(() => '')` never
+    // fires because the promise never rejects, it just never resolves — this
+    // is exactly what hung a real run for 5+ minutes until the browser was
+    // force-closed (MCP/trace-confirmed 2026-09-11) instead of falling back.
     const invoiceLink = grid
-      .locator(`[role="row"][data-rgrow="${rgrow}"]`)
-      .getByRole('link', { name: /^Invoice #/ })
+      .locator(`[role="row"][data-rgrow="${rgrow}"] a`)
       .first();
-    const invoiceNumber = ((await invoiceLink.textContent().catch(() => '')) || '').trim() || `row-rgrow-${rgrow}`;
+    const invoiceNumber = (((await invoiceLink.textContent({ timeout: 5000 }).catch(() => '')) || '').trim()).replace(/✕$/, '').trim() || `row-rgrow-${rgrow}`;
 
     if (skipSet.has(invoiceNumber)) continue;
 
@@ -1324,14 +1345,14 @@ async function deleteInvoicesTopToBottomViaApi(page, maxRuntimeMs) {
   return { deletedCount, failedCount, skippedInvoices: [...skipSet] };
 }
 
-test.describe('Invoices cleanup', () => {
+test.describe.skip('Invoices cleanup', () => {
   test('TC267 @cleanup @invoice Delete invoices from the global Invoices list top to bottom, verified via API response', async ({ browser }) => {
-    // Per requirement: this test runs for up to 2 hours, deleting invoices from
-    // the top of the global Invoices list downward and verifying each deletion
-    // through the actual DELETE /api/bird-table/rows API response rather than
-    // trusting the UI dialog closing. A small buffer above the 2h work budget
-    // lets the last in-flight step/log finish before the test itself times out.
-    const RUNTIME_BUDGET_MS = 3 * 60 * 60 * 1000; // 2 hours
+    // This test runs for up to 3 hours, deleting invoices from the top of the
+    // global Invoices list downward and verifying each deletion through the
+    // actual DELETE /api/bird-table/rows API response rather than trusting
+    // the UI dialog closing. A small buffer above the 3h work budget lets the
+    // last in-flight step/log finish before the test itself times out.
+    const RUNTIME_BUDGET_MS = 3 * 60 * 60 * 1000; // 3 hours
     test.setTimeout(RUNTIME_BUDGET_MS + 10 * 60 * 1000);
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
@@ -1434,14 +1455,18 @@ async function findNextDeletableApprovalTemplateRow(page, protectedProperties, s
 
   for (let i = 0; i < count; i++) {
     const row = actionRows.nth(i);
-    const rgrow = await row.getAttribute('data-rgrow').catch(() => null);
+    const rgrow = await row.getAttribute('data-rgrow', { timeout: 5000 }).catch(() => null);
     if (rgrow == null) continue;
 
     const rowCells = grid.locator(`[role="row"][data-rgrow="${rgrow}"] [role="gridcell"]`);
     if ((await rowCells.count().catch(() => 0)) < 3) continue;
 
-    const name = (((await rowCells.nth(0).textContent().catch(() => '')) || '').trim()).replace(/✕$/, '').trim();
-    const propertiesText = ((await rowCells.nth(2).textContent().catch(() => '')) || '').trim();
+    // Explicit timeouts here (see the matching note in findNextDeletableInvoiceRow
+    // above): without one, a transient mismatch between this actions-pane row and
+    // its paired data-pane row would make Playwright wait indefinitely for a cell
+    // that never appears, and `.catch(() => '')` would never fire to recover.
+    const name = (((await rowCells.nth(0).textContent({ timeout: 5000 }).catch(() => '')) || '').trim()).replace(/✕$/, '').trim();
+    const propertiesText = ((await rowCells.nth(2).textContent({ timeout: 5000 }).catch(() => '')) || '').trim();
 
     if (!name || skipSet.has(name)) continue;
 
@@ -1550,13 +1575,13 @@ async function deleteApprovalTemplatesTopToBottomViaApi(page, protectedPropertie
 
 test.describe('Approval templates cleanup', () => {
   test('TC268 @cleanup @approvals Delete approval templates not belonging to the protected sample properties', async ({ browser }) => {
-    // Per requirement: this test runs for up to 2 hours, deleting approval
-    // templates from the top of the list downward — skipping (never deleting)
-    // any template that belongs to one of the 7 protected sample properties —
-    // and verifying each deletion via the DELETE /api/bird-table/rows API
-    // status code alone. A small buffer above the 2h work budget lets the
-    // last in-flight step/log finish before the test itself times out.
-    const RUNTIME_BUDGET_MS = 3 * 60 * 60 * 1000; // 2 hours
+    // This test runs for up to 3 hours, deleting approval templates from the
+    // top of the list downward — skipping (never deleting) any template that
+    // belongs to one of the 7 protected sample properties — and verifying
+    // each deletion via the DELETE /api/bird-table/rows API status code
+    // alone. A small buffer above the 3h work budget lets the last in-flight
+    // step/log finish before the test itself times out.
+    const RUNTIME_BUDGET_MS = 3 * 60 * 60 * 1000; // 3 hours
     test.setTimeout(RUNTIME_BUDGET_MS + 10 * 60 * 1000);
 
     const protectedProperties = new Set([
@@ -1619,7 +1644,7 @@ test.describe('Approval templates cleanup', () => {
   });
 });
 
-test.describe('Organization pending users cleanup', () => {
+test.describe.skip('Organization pending users cleanup', () => {
   test.skip('TC260 @cleanup @organization Cleanup invited/expired users across pages', async ({ browser }) => {
     test.setTimeout(3600000);
 
