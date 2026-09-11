@@ -1390,7 +1390,7 @@ test.describe.only('Invoices cleanup', () => {
           await expect(invoicesItem).toBeVisible({ timeout: 15000 });
           await invoicesItem.click();
           await page.waitForURL('**/invoices', { timeout: 20000 });
-          await page.waitForTimeout(8000);
+          await page.waitForTimeout(12000);
           await expect(invoiceGridLocator(page)).toBeVisible({ timeout: 30000 });
         });
 
