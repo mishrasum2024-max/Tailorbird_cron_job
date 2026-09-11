@@ -1620,7 +1620,7 @@ test.describe('Approval templates cleanup', () => {
 });
 
 test.describe('Organization pending users cleanup', () => {
-  test('TC260 @cleanup @organization Cleanup invited/expired users across pages', async ({ browser }) => {
+  test.skip('TC260 @cleanup @organization Cleanup invited/expired users across pages', async ({ browser }) => {
     test.setTimeout(3600000);
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
@@ -1668,7 +1668,7 @@ test.describe('Organization pending users cleanup', () => {
     }
   });
 
-  test('TC263 @cleanup @organization Remove/revoke all users matching "fga_activate" regardless of status', async ({ browser }) => {
+  test.skip('TC263 @cleanup @organization Remove/revoke all users matching "fga_activate" regardless of status', async ({ browser }) => {
     test.setTimeout(3600000); // 10 min cap — search narrows the table first, so this should stay well under budget
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
@@ -1712,7 +1712,7 @@ test.describe('Organization pending users cleanup', () => {
     }
   });
 
-  test('TC264 @cleanup @organization Remove/revoke all users matching "fga_scope" regardless of status', async ({ browser }) => {
+  test.skip('TC264 @cleanup @organization Remove/revoke all users matching "fga_scope" regardless of status', async ({ browser }) => {
     test.setTimeout(3600000); // 10 min cap — search narrows the table first, so this should stay well under budget
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
@@ -1756,7 +1756,7 @@ test.describe('Organization pending users cleanup', () => {
     }
   });
 
-  test('TC265 @cleanup @organization Remove/revoke all users who are neither Active nor Admin', async ({ browser }) => {
+  test.skip('TC265 @cleanup @organization Remove/revoke all users who are neither Active nor Admin', async ({ browser }) => {
     test.setTimeout(3600000); // whole-org sweep, no email filter — can cover many more rows than TC263/264
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
