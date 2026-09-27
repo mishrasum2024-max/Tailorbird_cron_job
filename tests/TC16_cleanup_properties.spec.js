@@ -186,6 +186,7 @@ async function deleteJobByTitle(page, jobTitle) {
   const searchInput = page.locator('input[placeholder="Search..."]:not([disabled])').first();
   await searchInput.waitFor({ state: 'visible', timeout: 30000 });
   await searchInput.fill(jobTitle);
+  await page.keyboard.press('Enter');
   await page.waitForTimeout(8000);
 
   // Find the exact data row that matches the title using accessibility tree
@@ -1042,6 +1043,7 @@ test.describe('Properties cleanup', () => {
           const input = page.locator('input[placeholder="Search..."]');
           await input.click();
           await input.fill('');
+          await page.keyboard.press('Enter');
           await page.waitForTimeout(5000);
         });
 
@@ -1061,6 +1063,7 @@ test.describe('Properties cleanup', () => {
             iterations += 1;
 
             await page.locator('input[placeholder="Search..."]').fill('');
+            await page.keyboard.press('Enter');
             await page.waitForTimeout(5000);
 
             const allNames = await collectAllPropertyNamesFromGrid(page);
