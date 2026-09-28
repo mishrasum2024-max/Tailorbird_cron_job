@@ -1361,7 +1361,7 @@ test.describe('Invoices cleanup', () => {
     // the UI dialog closing. A small buffer above the 3h work budget lets the
     // last in-flight step/log finish before the test itself times out.
     const RUNTIME_BUDGET_MS = 3 * 60 * 60 * 1000; // 3 hours
-    test.setTimeout(RUNTIME_BUDGET_MS + 10 * 60 * 1000);
+    test.setTimeout(RUNTIME_BUDGET_MS);
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
     const page = await context.newPage();
@@ -1428,10 +1428,10 @@ test.describe('Invoices cleanup', () => {
     // dialog — so the same invoiceGridLocator/deleteInvoicesTopToBottomViaApi
     // helpers used by TC267 apply unchanged, just pointed at the job URL.
     const RUNTIME_BUDGET_MS = 60 * 60 * 1000; // 1 hour — a single job's invoice list is bounded
-    test.setTimeout(RUNTIME_BUDGET_MS + 10 * 60 * 1000);
+    test.setTimeout(RUNTIME_BUDGET_MS);
 
     const targetUrl = process.env.JOB_INVOICE_TARGET_URL
-      || 'https://beta.tailorbird.com/jobs/4330?propertyId=8659&tab=invoices';
+      || 'https://beta.tailorbird.com/jobs/4304?propertyId=7552&tab=invoices&contractSubTab=retainage';
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
     const page = await context.newPage();
