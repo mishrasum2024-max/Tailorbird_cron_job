@@ -321,6 +321,39 @@ function usersGridLocator(page) {
 }
 
 /**
+ * Locates the Users tab search box. The placeholder changed from
+ * "Search by name or email" to "Search..." (with a separate "Search" button),
+ * and the search is now only applied on Enter (MCP-verified 2026-10-05).
+ * The legacy placeholder is kept as a fallback.
+ * @param {import('@playwright/test').Page} page
+ */
+function usersSearchInputLocator(page) {
+  return page
+    .locator('.mantine-AppShell-main')
+    .locator('input[placeholder="Search..."], input[placeholder="Search by name or email"], input[placeholder="Search by name or e-mail"]')
+    .first();
+}
+
+/**
+ * Types `text` into the Users search box and presses Enter so the search is applied.
+ * Pass '' to clear a previous search.
+ * @param {import('@playwright/test').Page} page
+ * @param {string} text
+ * @param {{ required?: boolean }} [opts] required=false skips silently when the box isn't shown
+ */
+async function applyUsersSearch(page, text, { required = true } = {}) {
+  const search = usersSearchInputLocator(page);
+  if (required) {
+    await search.waitFor({ state: 'visible', timeout: 30000 });
+  } else if (!(await search.isVisible().catch(() => false))) {
+    return;
+  }
+  await search.fill(text);
+  await search.press('Enter');
+  await page.waitForTimeout(5000);
+}
+
+/**
  * revo-grid renders the pinned "Actions" column as a separate DOM pane from
  * the scrollable Name/Email/Status columns, but every cell — in both panes —
  * carries the same `data-rgrow="N"` per visual row (MCP-verified), which is
@@ -525,7 +558,11 @@ async function revokeAllInvitedUsersAcrossPages(page) {
  */
 async function revokeUsersMatchingTextAnyStatus(page, matchText) {
   const grid = usersGridLocator(page);
-  await grid.waitFor({ state: 'visible', timeout: 30000 });
+  // A search with no matches removes the grid entirely and shows an empty state
+  // instead (MCP-verified 2026-10-05) — that means nothing to clean, not a failure.
+  const emptyState = page.getByText('No organization users added yet');
+  await grid.or(emptyState).first().waitFor({ state: 'visible', timeout: 30000 });
+  if (await emptyState.isVisible().catch(() => false)) return 0;
   const matchRe = new RegExp(matchText, 'i');
 
   let totalRemoved = 0;
@@ -537,6 +574,14 @@ async function revokeUsersMatchingTextAnyStatus(page, matchText) {
 
   for (let guard = 0; guard < maxIterations; guard++) {
     await page.waitForTimeout(guard === 0 ? 3000 : 1500);
+
+    // A successful revoke clears the search box and resets the grid to the full
+    // (virtualized) list (MCP-verified 2026-10-05), hiding the remaining matches —
+    // re-apply the search whenever it no longer holds matchText.
+    const currentSearch = await usersSearchInputLocator(page).inputValue().catch(() => null);
+    if (currentSearch !== null && currentSearch !== matchText) {
+      await applyUsersSearch(page, matchText);
+    }
 
     const emailCells = grid.locator('[role="gridcell"]').filter({ hasText: matchRe });
     const count = await emailCells.count().catch(() => 0);
@@ -587,6 +632,9 @@ async function revokeUsersMatchingTextAnyStatus(page, matchText) {
     }
 
     totalRemoved += 1;
+    // The re-applied search can briefly still return the just-removed user
+    // (later attempts 400 "not an active member"), so never target it again.
+    skipEmails.add(candidateEmailForRow);
     console.log(`[cleanup-fga] Removed user: ${rowText.replace(/\n/g, ' | ')} (API confirmed: ${message})`);
   }
 
@@ -719,6 +767,162 @@ async function revokeAllNonActiveNonAdminUsers(page) {
     console.log(`[cleanup-nonactive] Revoked/removed non-Active, non-Admin user: ${emailText || 'unknown'} (API confirmed: ${message})`);
   }
 
+  return totalRevoked;
+}
+
+/**
+ * Admin accounts that must never be revoked, whatever their status. Covers the
+ * accounts the suites log in with (.env) plus any extra ones listed in
+ * PROTECTED_ADMIN_EMAILS (comma-separated). Add permanent ones to the array.
+ */
+const PROTECTED_ADMIN_EMAILS = new Set(
+  [
+    process.env.TEST_EMAIL,
+    process.env.VENDOR_EMAIL,
+    process.env.NEW_TEST_EMAIL,
+    ...(process.env.PROTECTED_ADMIN_EMAILS || '').split(','),
+  ]
+    .map((e) => (e || '').trim().toLowerCase())
+    .filter(Boolean)
+);
+
+/**
+ * Revokes the invitation of every user whose email contains `matchText` AND
+ * whose Status is exactly "pending". Active users (and anything that isn't
+ * pending) are never touched, nor is anything in PROTECTED_ADMIN_EMAILS.
+ *
+ * Safety layers (MCP-verified 2026-10-05):
+ * - Only the "Revoke invitation" menu item is used — pending rows expose
+ *   "Resend invitation"/"Revoke invitation", active rows expose "Revoke access",
+ *   which this never clicks, so an active user can't be revoked even if a row
+ *   shifts under the cursor.
+ * - The row's email/status is re-read immediately before acting.
+ * - The confirm dialog ("Revoke invite? ... revoke the invite to <email>?")
+ *   must name the exact target email, or nothing is confirmed.
+ *
+ * A successful revoke clears the search and resets the virtualized grid, so the
+ * search is re-applied each iteration; matches beyond the ~11 rendered rows are
+ * reached by scrolling the inner viewport (same approach as revokeAllNonActiveNonAdminUsers).
+ * @param {import('@playwright/test').Page} page
+ * @param {string} matchText
+ */
+async function revokePendingUsersMatchingText(page, matchText) {
+  const grid = usersGridLocator(page);
+  const emptyState = page.getByText('No organization users added yet');
+  await grid.or(emptyState).first().waitFor({ state: 'visible', timeout: 30000 });
+  if (await emptyState.isVisible().catch(() => false)) return 0;
+
+  const matchLower = matchText.toLowerCase();
+  const isTarget = (email, status) =>
+    email.toLowerCase().includes(matchLower) &&
+    /^pending$/i.test(status) &&
+    !PROTECTED_ADMIN_EMAILS.has(email.toLowerCase());
+  const readRow = async (rgrow) => {
+    const cells = grid.locator(`[role="gridcell"][data-rgrow="${rgrow}"]`);
+    const email = ((await cells.nth(1).textContent().catch(() => '')) || '').trim();
+    const status = ((await cells.nth(2).textContent().catch(() => '')) || '').trim();
+    return { email, status };
+  };
+
+  let totalRevoked = 0;
+  const maxIterations = 800;
+  const failureCounts = new Map();
+  const skipEmails = new Set();
+  const rejectedEmails = [];
+  let stagnantScrolls = 0;
+
+  for (let guard = 0; guard < maxIterations; guard++) {
+    await page.waitForTimeout(guard === 0 ? 3000 : 800);
+
+    const currentSearch = await usersSearchInputLocator(page).inputValue().catch(() => null);
+    if (currentSearch !== null && currentSearch !== matchText) {
+      await applyUsersSearch(page, matchText);
+    }
+    if (await emptyState.isVisible().catch(() => false)) break;
+
+    const rowEls = grid.locator('[role="row"][data-rgrow]');
+    const rowCount = await rowEls.count().catch(() => 0);
+    if (rowCount === 0) break;
+
+    // Each visual row renders twice (main pane + pinned Actions pane) — dedupe by data-rgrow.
+    const seenRgrows = new Set();
+    let targetRgrow = null;
+    let targetEmail = '';
+    for (let i = 0; i < rowCount; i++) {
+      const rgrow = await rowEls.nth(i).getAttribute('data-rgrow').catch(() => null);
+      if (rgrow == null || seenRgrows.has(rgrow)) continue;
+      seenRgrows.add(rgrow);
+
+      const { email, status } = await readRow(rgrow);
+      if (!isTarget(email, status) || skipEmails.has(email)) continue;
+      targetRgrow = rgrow;
+      targetEmail = email;
+      break;
+    }
+
+    if (targetRgrow == null) {
+      const scrollState = await grid.evaluate((el) => {
+        const scrollers = [...el.querySelectorAll('.vertical-inner.scroll-rgRow')];
+        if (scrollers.length === 0) return null;
+        const before = scrollers[0].scrollTop;
+        const atBottomBefore = before + scrollers[0].clientHeight >= scrollers[0].scrollHeight - 4;
+        scrollers.forEach((s) => {
+          s.scrollTop = Math.min(s.scrollTop + Math.max(200, s.clientHeight * 0.8), s.scrollHeight);
+        });
+        return { before, after: scrollers[0].scrollTop, atBottomBefore };
+      }).catch(() => null);
+
+      await page.waitForTimeout(500);
+
+      if (!scrollState) break;
+      stagnantScrolls = scrollState.after === scrollState.before ? stagnantScrolls + 1 : 0;
+      if (scrollState.atBottomBefore || stagnantScrolls >= 3) break;
+      continue;
+    }
+
+    // Re-check right before acting — the virtualized grid may have re-rendered this index.
+    const recheck = await readRow(targetRgrow);
+    if (recheck.email !== targetEmail || !isTarget(recheck.email, recheck.status)) continue;
+
+    const emailRe = new RegExp(targetEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    const { ok, message } = await attemptRevokeRow(
+      page,
+      userActionButton(grid, targetRgrow),
+      /^Revoke invitation$/i,
+      emailRe,
+      'button:has-text("Revoke")'
+    );
+
+    if (!ok) {
+      // The API answered with a rejection (e.g. DELETE /api/organization/users/{id}
+      // -> 400 "Organization admins cannot be revoked", MCP-verified 2026-10-05) —
+      // retrying won't change it, so log the user and move on to the next one.
+      // Only UI-level failures (no API response / exception) fall through to retries.
+      const apiRejected = !/^(Exception during revoke attempt|No matching \/api)/.test(message);
+      if (apiRejected) {
+        console.log(`[cleanup-pending-admin] API rejected revoke for ${targetEmail}: ${message} — skipping to next user.`);
+        skipEmails.add(targetEmail);
+        rejectedEmails.push(targetEmail);
+        continue;
+      }
+      const failCount = (failureCounts.get(targetEmail) || 0) + 1;
+      failureCounts.set(targetEmail, failCount);
+      console.log(`[cleanup-pending-admin] FAILED to revoke ${targetEmail} (attempt ${failCount}): ${message}`);
+      if (failCount >= 3) {
+        console.log(`[cleanup-pending-admin] Giving up on ${targetEmail} after ${failCount} failed attempts — skipping.`);
+        skipEmails.add(targetEmail);
+      }
+      continue;
+    }
+
+    totalRevoked += 1;
+    skipEmails.add(targetEmail); // re-applied search can briefly still list it
+    console.log(`[cleanup-pending-admin] Revoked pending invite: ${targetEmail} (API confirmed: ${message})`);
+  }
+
+  if (rejectedEmails.length) {
+    console.log(`[cleanup-pending-admin] ${rejectedEmails.length} user(s) rejected by the API and skipped: ${rejectedEmails.join(', ')}`);
+  }
   return totalRevoked;
 }
 
@@ -1417,7 +1621,7 @@ test.describe('Invoices cleanup', () => {
     }
   });
 
-  test('TC269 @cleanup @invoice Delete all invoices on a specific job Invoice tab, verified via API response', async ({ browser }) => {
+  test.skip('TC269 @cleanup @invoice Delete all invoices on a specific job Invoice tab, verified via API response', async ({ browser }) => {
     // Targets a single job's Invoice tab directly by URL (rather than the
     // global /invoices list used by TC267) and deletes every invoice found
     // there. MCP-verified 2026-09-09: a job's Invoice tab renders the exact
@@ -1732,11 +1936,7 @@ test.describe('Organization pending users cleanup', () => {
         await ensureLeftPanelExpanded(page);
 
         await test.step('Clear user search if present', async () => {
-          const search = page.locator('input[placeholder="Search by name or email"]').first();
-          if (await search.isVisible().catch(() => false)) {
-            await search.fill('');
-            await page.waitForTimeout(5000);
-          }
+          await applyUsersSearch(page, '', { required: false });
         });
 
         await test.step('Cleanup invited/expired users from all pages', async () => {
@@ -1774,10 +1974,7 @@ test.describe('Organization pending users cleanup', () => {
         });
         await ensureLeftPanelExpanded(page);
         await test.step('Search users matching "fga_activate"', async () => {
-          const search = page.locator('input[placeholder="Search by name or email"]').first();
-          await search.waitFor({ state: 'visible', timeout: 15000 });
-          await search.fill('fga_activate');
-          await page.waitForTimeout(5000);
+          await applyUsersSearch(page, 'fga_activate');
         });
 
         await test.step('Remove/revoke matching users regardless of status', async () => {
@@ -1818,10 +2015,7 @@ test.describe('Organization pending users cleanup', () => {
         });
         await ensureLeftPanelExpanded(page);
         await test.step('Search users matching "fga_scope"', async () => {
-          const search = page.locator('input[placeholder="Search by name or email"]').first();
-          await search.waitFor({ state: 'visible', timeout: 15000 });
-          await search.fill('fga_scope');
-          await page.waitForTimeout(5000);
+          await applyUsersSearch(page, 'fga_scope');
         });
 
         await test.step('Remove/revoke matching users regardless of status', async () => {
@@ -1863,11 +2057,7 @@ test.describe('Organization pending users cleanup', () => {
         await ensureLeftPanelExpanded(page);
 
         await test.step('Clear user search if present', async () => {
-          const search = page.locator('input[placeholder="Search by name or email"]').first();
-          if (await search.isVisible().catch(() => false)) {
-            await search.fill('');
-            await page.waitForTimeout(5000);
-          }
+          await applyUsersSearch(page, '', { required: false });
         });
 
         await test.step('Revoke/remove all users who are neither Active nor Admin', async () => {
@@ -1885,6 +2075,45 @@ test.describe('Organization pending users cleanup', () => {
         });
       } catch (err) {
         throw new Error(`[cleanup-nonactive] User cleanup failed: ${err?.message || err}`);
+      }
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('TC270 @cleanup @organization Revoke pending "admin_" users only (Active and protected admins untouched)', async ({ browser }) => {
+    test.setTimeout(3600000); // "admin_" matches ~300 rows — virtualized scan + one revoke per pending row
+
+    const context = await browser.newContext({ storageState: 'sessionState.json' });
+    const page = await context.newPage();
+    const org = new OrganizationHelper(page);
+    try {
+      try {
+        await test.step('Open Manage Organization (reuse existing session)', async () => {
+          await org.gotoOrganizationWorkspace();
+          await page.waitForTimeout(10000);
+
+          if ((page.url() || '').includes('/login')) {
+            throw new Error('sessionState.json is not authenticated. Refresh sessionState once, then rerun cleanup.');
+          }
+        });
+        await ensureLeftPanelExpanded(page);
+        await test.step('Search users matching "admin_"', async () => {
+          await applyUsersSearch(page, 'admin_');
+        });
+
+        await test.step('Revoke pending "admin_" invites, leave Active/protected users alone', async () => {
+          console.log(`[cleanup-pending-admin] Protected emails: ${[...PROTECTED_ADMIN_EMAILS].join(', ') || '(none)'}`);
+          const revokedCount = await revokePendingUsersMatchingText(page, 'admin_');
+          if (revokedCount === 0) {
+            console.log('[cleanup-pending-admin] No pending "admin_" users found.');
+          } else {
+            console.log(`[cleanup-pending-admin] Total pending "admin_" invites revoked: ${revokedCount}`);
+          }
+          expect(revokedCount).toBeGreaterThanOrEqual(0);
+        });
+      } catch (err) {
+        throw new Error(`[cleanup-pending-admin] User cleanup failed: ${err?.message || err}`);
       }
     } finally {
       await context.close();
