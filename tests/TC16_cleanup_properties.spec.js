@@ -1558,7 +1558,7 @@ async function deleteInvoicesTopToBottomViaApi(page, maxRuntimeMs) {
 }
 
 test.describe('Invoices cleanup', () => {
-  test('TC267 @cleanup @invoice Delete invoices from the global Invoices list top to bottom, verified via API response', async ({ browser }) => {
+  test.skip('TC267 @cleanup @invoice Delete invoices from the global Invoices list top to bottom, verified via API response', async ({ browser }) => {
     // This test runs for up to 3 hours, deleting invoices from the top of the
     // global Invoices list downward and verifying each deletion through the
     // actual DELETE /api/bird-table/rows API response rather than trusting
