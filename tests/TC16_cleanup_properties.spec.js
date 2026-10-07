@@ -1558,7 +1558,7 @@ async function deleteInvoicesTopToBottomViaApi(page, maxRuntimeMs) {
 }
 
 test.describe('Invoices cleanup', () => {
-  test.skip('TC267 @cleanup @invoice Delete invoices from the global Invoices list top to bottom, verified via API response', async ({ browser }) => {
+  test('TC267 @cleanup @invoice Delete invoices from the global Invoices list top to bottom, verified via API response', async ({ browser }) => {
     // This test runs for up to 3 hours, deleting invoices from the top of the
     // global Invoices list downward and verifying each deletion through the
     // actual DELETE /api/bird-table/rows API response rather than trusting
@@ -1621,7 +1621,7 @@ test.describe('Invoices cleanup', () => {
     }
   });
 
-  test.skip('TC269 @cleanup @invoice Delete all invoices on a specific job Invoice tab, verified via API response', async ({ browser }) => {
+  test('TC269 @cleanup @invoice Delete all invoices on a specific job Invoice tab, verified via API response', async ({ browser }) => {
     // Targets a single job's Invoice tab directly by URL (rather than the
     // global /invoices list used by TC267) and deletes every invoice found
     // there. MCP-verified 2026-09-09: a job's Invoice tab renders the exact
