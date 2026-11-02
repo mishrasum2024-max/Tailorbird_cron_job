@@ -1148,9 +1148,15 @@ test.describe('Properties cleanup', () => {
           // with their property names — avoids the filter panel entirely.
           const exportPath = path.join(process.cwd(), 'downloads', 'jobs-export.csv');
 
+          // Export is now a menu ("Export CSV" / "Export Custom Report") instead of a
+          // direct download — "Export CSV" still yields the full job-data.csv with the
+          // same Title/Property columns (MCP-verified 2026-11-02).
+          await page.getByRole('button', { name: 'Export' }).click();
+          const exportCsvItem = page.getByRole('menuitem', { name: /^Export CSV/ });
+          await exportCsvItem.waitFor({ state: 'visible', timeout: 15000 });
           const [download] = await Promise.all([
             page.waitForEvent('download', { timeout: 30000 }),
-            page.getByRole('button', { name: 'Export' }).click(),
+            exportCsvItem.click(),
           ]);
           await download.saveAs(exportPath);
           console.log(`[cleanup-jobs] Export saved to: ${exportPath}`);
