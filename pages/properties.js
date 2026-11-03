@@ -6,11 +6,22 @@ import { propertyLocators } from '../locators/propertyLocator.js';
 import testData from '../fixture/property.json';
 const prop = require('../locators/locationLocator');
 
+/** Thrown when the backend refuses DELETE /api/bird-table/rows for a property (e.g. it still has jobs). */
+class PropertyDeleteRejectedError extends Error {
+    constructor(name, status, body) {
+        super(`Backend rejected delete for property "${name}" (HTTP ${status}): ${body}`);
+        this.name = 'PropertyDeleteRejectedError';
+        this.propertyName = name;
+        this.status = status;
+    }
+}
+
 class PropertiesHelper {
     constructor(page) {
         this.page = page;
-        this.nameInput = page.getByLabel('Name');
-        this.addressInput = page.getByRole('textbox', { name: 'Address' });
+        // exact: Create Property modal also has "Legal Name" / "Legal Address" fields.
+        this.nameInput = page.getByRole('textbox', { name: 'Name', exact: true });
+        this.addressInput = page.getByRole('textbox', { name: 'Address', exact: true });
         this.cityInput = page.getByLabel('City');
         this.stateInput = page.getByLabel('State');
         this.zipInput = page.getByLabel('Zipcode');
@@ -558,6 +569,10 @@ class PropertiesHelper {
                 await searchInput.fill(name);
                 await this.page.waitForTimeout(600);
             }
+            // Clicking the pinned Actions trash scrolls the grid right; revogrid then virtualizes the
+            // Name column out of the DOM, so the next delete can't find its cell. Reset to the left.
+            await this.page.locator('revogr-viewport-scroll').evaluateAll((els) => els.forEach((e) => { e.scrollLeft = 0; })).catch(() => { });
+            await this.page.waitForTimeout(400);
 
             const cell = this.page.locator(propertyLocators.propertyNameCell(name)).first();
             const row = cell.locator(propertyLocators.rowFromCell).first();
@@ -572,24 +587,32 @@ class PropertiesHelper {
         }
         console.log(`📌 Row index (data-rgrow): ${rowIndex}`);
 
-        await this.page.waitForTimeout(10000);
-        await this.page.waitForTimeout(3000);
-
-        await this.page.locator(propertyLocators.rowDeleteIcon(rowIndex)).first().waitFor({ state: "visible" });
+        await this.page.locator(propertyLocators.rowDeleteIcon(rowIndex)).first().waitFor({ state: "visible", timeout: 15000 });
         await this.page.locator(propertyLocators.rowDeleteIcon(rowIndex)).first().click();
 
+        // "Delete Property" Mantine modal → DELETE /api/bird-table/rows {table_name:"property", row_id}.
         const deleteStepOne = this.page.locator(propertyLocators.deleteButtonInPopover).first();
         await deleteStepOne.waitFor({ state: "visible" });
+        const deleteResponse = this.page.waitForResponse(
+            (r) => r.url().includes("/api/bird-table/rows") && r.request().method() === "DELETE",
+            { timeout: 30000 }
+        );
         await deleteStepOne.click();
 
         // Some builds show a second confirmation action (Delete/Remove).
         const deleteStepTwo = this.page.locator(propertyLocators.deleteConfirmBtn).first();
-        if (await deleteStepTwo.isVisible({ timeout: 2000 }).catch(() => false)) {
+        if (await deleteStepTwo.isVisible({ timeout: 1000 }).catch(() => false)) {
             await deleteStepTwo.click();
         }
 
-        await this.page.waitForTimeout(10000);
-        await this.page.waitForTimeout(1000);
+        // Backend rejects (400 "Unable to save the changes...") properties that still have jobs,
+        // even though the modal says associated data is deleted (MCP-verified 2026-11-03).
+        const resp = await deleteResponse;
+        if (!resp.ok()) {
+            const body = await resp.text().catch(() => "");
+            throw new PropertyDeleteRejectedError(name, resp.status(), body);
+        }
+        await this.page.waitForTimeout(1500);
 
         const searchInput = this.page.locator(propertyLocators.searchInput).first();
         if (await searchInput.isVisible().catch(() => false)) {
@@ -2257,4 +2280,5 @@ class PropertiesHelper {
     }
 }
 
+PropertiesHelper.PropertyDeleteRejectedError = PropertyDeleteRejectedError;
 module.exports = PropertiesHelper;

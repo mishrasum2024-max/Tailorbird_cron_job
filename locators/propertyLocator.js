@@ -12,7 +12,7 @@ export const propertyLocators = {
     firstRowNameCellText: '[role="row"]:first-of-type [role="gridcell"]:first-of-type div',
     propertyNameCell: name => `[role="gridcell"]:has-text("${name}")`,
     rowFromCell: "xpath=ancestor::div[@role='row']",
-    /** Actions column: trash uses aria-label="Delete Property" and lucide-trash2 (live properties table HTML). */
+    /** Actions column: trash is a red subtle ActionIcon with lucide-trash2 (aria-label removed in current build; kept as fallback). */
     rowDeleteIcon: rowIndex =>
         `[role="row"][data-rgrow="${rowIndex}"] button[aria-label="Delete Property"], [role="row"][data-rgrow="${rowIndex}"] button:has(svg[class*="lucide-trash"])`,
     
