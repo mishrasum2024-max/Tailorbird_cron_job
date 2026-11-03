@@ -182,36 +182,54 @@ async function collectVisibleJobTitles(page) {
  * @param {string} jobTitle
  * @returns {Promise<boolean>} true if deleted
  */
-async function deleteJobByTitle(page, jobTitle) {
+/**
+ * @param {string} [project] Project cell value from the export. Titles are not unique
+ *   (e.g. "Construction Management Fee Job" exists on protected Test Property 6 too),
+ *   so when given, the row must also contain this project value.
+ */
+async function deleteJobByTitle(page, jobTitle, project) {
   const searchInput = page.locator('input[placeholder="Search..."]:not([disabled])').first();
   await searchInput.waitFor({ state: 'visible', timeout: 30000 });
   await searchInput.fill(jobTitle);
   await page.keyboard.press('Enter');
-  await page.waitForTimeout(8000);
 
   // Find the exact data row that matches the title using accessibility tree
   const mainDataRows = page.getByRole('row')
     .filter({ hasNot: page.getByRole('checkbox') })
     .filter({ hasNot: page.locator('button[aria-label="Delete Row"]') });
 
-  const rows = await mainDataRows.all();
-  let targetIndex = -1;
-
-  for (let i = 0; i < rows.length; i++) {
-    const text = (await rows[i].getByRole('gridcell').first().textContent().catch(() => ''))
-      .trim().split('\n')[0].replace(/✕/g, '').trim();
-    if (text === jobTitle) { targetIndex = i; break; }
+  // Poll until the search result renders instead of a fixed 8s sleep.
+  let rowIndex = null;
+  const deadline = Date.now() + 10000;
+  while (rowIndex === null && Date.now() < deadline) {
+    await page.waitForTimeout(500);
+    const rows = await mainDataRows.all();
+    for (let i = 0; i < rows.length; i++) {
+      const text = (await rows[i].getByRole('gridcell').first().textContent().catch(() => ''))
+        .trim().split('\n')[0].replace(/✕/g, '').trim();
+      if (text !== jobTitle) continue;
+      if (project) {
+        const cells = (await rows[i].getByRole('gridcell').allInnerTexts().catch(() => [])).map((t) => t.trim());
+        if (!cells.includes(project)) continue;
+      }
+      rowIndex = await rows[i].getAttribute('data-rgrow').catch(() => null);
+      break;
+    }
   }
 
-  if (targetIndex === -1) {
+  if (rowIndex === null) {
     console.log(`[cleanup-jobs] Job "${jobTitle}" not found after search, skipping.`);
     await searchInput.fill('');
-    await page.waitForTimeout(4000);
+    await page.waitForTimeout(1000);
     return false;
   }
 
-  const deleteBtn = page.locator('button[aria-label="Delete Row"]').nth(targetIndex);
-  if (!(await deleteBtn.isVisible({ timeout: 5000 }).catch(() => false))) {
+  // Scope to the matched row (pinned Actions column shares data-rgrow): not every row has a
+  // Delete action (e.g. Construction Management Fee jobs only show View), so a global
+  // .nth() could land on a different job's trash button.
+  const deleteBtn = page.locator(`[role="row"][data-rgrow="${rowIndex}"] button[aria-label="Delete Row"]`).first();
+  if (!(await deleteBtn.isVisible({ timeout: 3000 }).catch(() => false))) {
+    console.log(`[cleanup-jobs] Job "${jobTitle}" has no Delete action in the grid (view-only), skipping.`);
     await searchInput.fill('');
     return false;
   }
@@ -225,14 +243,23 @@ async function deleteJobByTitle(page, jobTitle) {
     '[role="dialog"] button:has-text("Delete")',
   ].join(', ')).first();
   await confirmBtn.waitFor({ state: 'visible', timeout: 10000 });
+  // Confirm fires DELETE /api/bird-table/rows {table_name:"job", row_id} (MCP-verified 2026-11-03);
+  // wait on it instead of a fixed 10s+5s sleep so 80+ jobs fit in the budget.
+  const deleteResponse = page.waitForResponse(
+    (r) => r.url().includes('/api/bird-table/rows') && r.request().method() === 'DELETE',
+    { timeout: 30000 }
+  );
   await confirmBtn.click();
+  const resp = await deleteResponse;
+  if (!resp.ok()) {
+    console.log(`[cleanup-jobs] Backend rejected delete for "${jobTitle}" (HTTP ${resp.status()}): ${await resp.text().catch(() => '')}`);
+  }
 
-  await page.waitForTimeout(10000);
   await page.locator('input[placeholder="Search..."]:not([disabled])').first()
     .waitFor({ state: 'visible', timeout: 20000 }).catch(() => { });
   await searchInput.fill('');
-  await page.waitForTimeout(5000);
-  return true;
+  await page.waitForTimeout(1000);
+  return resp.ok();
 }
 
 /**
@@ -1108,7 +1135,7 @@ test.describe('Approvals table cleanup', () => {
 
 test.describe('Properties cleanup', () => {
   test('TC261 @cleanup @job Delete all jobs not belonging to protected properties or last created job', async ({ browser }) => {
-    test.setTimeout(600000); // 10 min — many jobs may exist
+    test.setTimeout(3600000); // 1 hour — 80+ deletable jobs at ~4-5s each
 
     const lastCreatedJobName = loadLastCreatedJobName();
     const dryRun = process.env.CLEANUP_DRY_RUN === '1';
@@ -1186,7 +1213,7 @@ test.describe('Properties cleanup', () => {
             }
 
             console.log(`[cleanup-jobs] ${dryRun ? 'DRY-RUN: would delete' : 'WILL DELETE'}: "${title}" (property: "${property || 'unknown'}")`);
-            if (!dryRun) toDelete.push(title);
+            if (!dryRun) toDelete.push({ title, project: (job['Project'] || '').trim() });
           }
 
           if (dryRun) {
@@ -1200,9 +1227,9 @@ test.describe('Properties cleanup', () => {
         if (!dryRun && toDelete.length > 0) {
           await test.step(`Delete ${toDelete.length} job(s)`, async () => {
             let deleted = 0;
-            for (const title of toDelete) {
-              console.log(`[cleanup-jobs] Deleting "${title}" (${deleted + 1}/${toDelete.length})`);
-              const success = await deleteJobByTitle(page, title);
+            for (const { title, project } of toDelete) {
+              console.log(`[cleanup-jobs] Deleting "${title}" (project ${project || '—'}) (${deleted + 1}/${toDelete.length})`);
+              const success = await deleteJobByTitle(page, title, project);
               if (success) deleted++;
               else console.log(`[cleanup-jobs] SKIP — "${title}" not found or already deleted.`);
             }
