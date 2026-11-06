@@ -1086,7 +1086,7 @@ async function removeAllCustomColumns(page) {
 }
 
 test.describe('Approvals table cleanup', () => {
-  test.skip('TC266 @cleanup @approvals Remove all custom columns from the Approvals table', async ({ browser }) => {
+  test('TC266 @cleanup @approvals Remove all custom columns from the Approvals table', async ({ browser }) => {
     // MCP-verified 500+ custom columns present, and the Manage Columns dialog
     // must be fully reopened per deletion (see removeAllCustomColumns) — one
     // pass through the whole backlog can run several hours. Note this exceeds
@@ -1361,7 +1361,7 @@ test.describe('Properties cleanup', () => {
     }
   });
 
-  test.skip('TC262 @cleanup @invoice Create and confirm 40 invoices for the requested job', async ({ browser }) => {
+  test('TC262 @cleanup @invoice Create and confirm 40 invoices for the requested job', async ({ browser }) => {
     test.setTimeout(1800000); // 30 min for 40 repeated invoice confirmations
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
@@ -1606,7 +1606,7 @@ async function deleteInvoicesTopToBottomViaApi(page, maxRuntimeMs) {
 }
 
 test.describe('Invoices cleanup', () => {
-  test.skip('TC267 @cleanup @invoice Delete invoices from the global Invoices list top to bottom, verified via API response', async ({ browser }) => {
+  test('TC267 @cleanup @invoice Delete invoices from the global Invoices list top to bottom, verified via API response', async ({ browser }) => {
     // This test runs for up to 3 hours, deleting invoices from the top of the
     // global Invoices list downward and verifying each deletion through the
     // actual DELETE /api/bird-table/rows API response rather than trusting
@@ -1669,7 +1669,7 @@ test.describe('Invoices cleanup', () => {
     }
   });
 
-  test.skip('TC269 @cleanup @invoice Delete all invoices on a specific job Invoice tab, verified via API response', async ({ browser }) => {
+  test('TC269 @cleanup @invoice Delete all invoices on a specific job Invoice tab, verified via API response', async ({ browser }) => {
     // Targets a single job's Invoice tab directly by URL (rather than the
     // global /invoices list used by TC267) and deletes every invoice found
     // there. MCP-verified 2026-09-09: a job's Invoice tab renders the exact
@@ -1889,7 +1889,7 @@ async function deleteApprovalTemplatesTopToBottomViaApi(page, protectedPropertie
 }
 
 test.describe('Approval templates cleanup', () => {
-  test.skip('TC268 @cleanup @approvals Delete approval templates not belonging to the protected sample properties', async ({ browser }) => {
+  test('TC268 @cleanup @approvals Delete approval templates not belonging to the protected sample properties', async ({ browser }) => {
     // This test runs for up to 3 hours, deleting approval templates from the
     // top of the list downward — skipping (never deleting) any template that
     // belongs to one of the 7 protected sample properties — and verifying
@@ -1960,7 +1960,7 @@ test.describe('Approval templates cleanup', () => {
 });
 
 test.describe('Organization pending users cleanup', () => {
-  test.skip('TC260 @cleanup @organization Cleanup invited/expired users across pages', async ({ browser }) => {
+  test('TC260 @cleanup @organization Cleanup invited/expired users across pages', async ({ browser }) => {
     test.setTimeout(3600000);
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
@@ -2004,7 +2004,7 @@ test.describe('Organization pending users cleanup', () => {
     }
   });
 
-  test.skip('TC263 @cleanup @organization Remove/revoke all users matching "fga_activate" regardless of status', async ({ browser }) => {
+  test('TC263 @cleanup @organization Remove/revoke all users matching "fga_activate" regardless of status', async ({ browser }) => {
     test.setTimeout(3600000); // 10 min cap — search narrows the table first, so this should stay well under budget
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
@@ -2045,7 +2045,7 @@ test.describe('Organization pending users cleanup', () => {
     }
   });
 
-  test.skip('TC264 @cleanup @organization Remove/revoke all users matching "fga_scope" regardless of status', async ({ browser }) => {
+  test('TC264 @cleanup @organization Remove/revoke all users matching "fga_scope" regardless of status', async ({ browser }) => {
     test.setTimeout(3600000); // 10 min cap — search narrows the table first, so this should stay well under budget
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
@@ -2086,7 +2086,7 @@ test.describe('Organization pending users cleanup', () => {
     }
   });
 
-  test.skip('TC265 @cleanup @organization Remove/revoke all users who are neither Active nor Admin', async ({ browser }) => {
+  test('TC265 @cleanup @organization Remove/revoke all users who are neither Active nor Admin', async ({ browser }) => {
     test.setTimeout(3600000); // whole-org sweep, no email filter — can cover many more rows than TC263/264
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
@@ -2129,7 +2129,7 @@ test.describe('Organization pending users cleanup', () => {
     }
   });
 
-  test.skip('TC270 @cleanup @organization Revoke pending "admin_" users only (Active and protected admins untouched)', async ({ browser }) => {
+  test('TC270 @cleanup @organization Revoke pending "admin_" users only (Active and protected admins untouched)', async ({ browser }) => {
     test.setTimeout(3600000); // "admin_" matches ~300 rows — virtualized scan + one revoke per pending row
 
     const context = await browser.newContext({ storageState: 'sessionState.json' });
