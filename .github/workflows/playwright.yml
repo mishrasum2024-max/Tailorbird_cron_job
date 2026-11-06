@@ -4,15 +4,18 @@ on:
   push:
 
   schedule:
-    # Runs every day at 5:00 AM IST (11:30 PM UTC)
+    # Runs every day at 5:00 PM IST (11:30 AM UTC)
     - cron: "30 20 * * *"
 
   workflow_dispatch:
 
 jobs:
   playwright-tests:
-    # Pinned: ubuntu-latest moved to 26.04, which Playwright 1.60 can't install browsers on.
     runs-on: ubuntu-24.04
+
+    # Official Playwright image with browsers and dependencies preinstalled
+    container:
+      image: mcr.microsoft.com/playwright:v1.60.0-noble
 
     timeout-minutes: 600
 
@@ -28,8 +31,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps
+      - name: Verify Playwright installation
+        run: npx playwright --version
 
       # Run login first, stop workflow if failed
       - name: Run login test
@@ -46,3 +49,5 @@ jobs:
         with:
           name: playwright-report
           path: playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7
