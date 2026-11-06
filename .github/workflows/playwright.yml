@@ -11,7 +11,8 @@ on:
 
 jobs:
   playwright-tests:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to 26.04, which Playwright 1.60 can't install browsers on.
+    runs-on: ubuntu-24.04
 
     timeout-minutes: 600
 
