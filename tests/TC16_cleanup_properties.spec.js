@@ -1618,7 +1618,7 @@ async function fetchInvoiceList(page, jobId) {
     const body = await res.json();
     return (body.rows || [])
       .filter((r) => jobId == null || r.job_id === jobId)
-      .map((r) => ({ id: r.id, status: r.status }));
+      .map((r) => ({ id: r.id, status: r.status, jobId: r.job_id }));
   }, jobId ?? null);
 }
 
@@ -1629,11 +1629,13 @@ async function fetchInvoiceList(page, jobId) {
  * the invoice status becomes "Rejected" and DELETE returns 200. The reject is a server
  * action (no /api/ call), so success is confirmed by polling the invoice's status.
  * Expects the page to already be on /approvals.
+ * Also used for change orders (TC273): pass approvalType 'Change Order' and tableName 'change_order'.
  * @param {import('@playwright/test').Page} page
- * @param {number} invoiceId
+ * @param {number} invoiceId record id (shown in the Approvals "ID" column)
+ * @param {{approvalType?: string, tableName?: string}} [opts]
  * @returns {Promise<{ok: boolean, reason: string}>}
  */
-async function rejectInvoiceApproval(page, invoiceId) {
+async function rejectInvoiceApproval(page, invoiceId, { approvalType = 'Invoice', tableName = 'invoice' } = {}) {
   // Close any dialog left over from the previous invoice so it can't block the search.
   if (await page.locator('[role="dialog"]').count()) {
     await page.keyboard.press('Escape');
@@ -1645,9 +1647,31 @@ async function rejectInvoiceApproval(page, invoiceId) {
 
   // Note: locator.isVisible() ignores its timeout and returns immediately, so wait explicitly.
   // Match the exact ID cell: the Invoice Number column is often a custom value (e.g. "PAY-1137").
+  // Also match the Approval Type cell: the search returns other types (e.g. a Draw) whose
+  // ID can collide with this record's id (MCP-verified 2026-11-10 searching "11057").
   const row = page.locator('[role="row"][data-rgrow]')
-    .filter({ has: page.getByRole('gridcell', { name: String(invoiceId), exact: true }) }).first();
-  if (!(await row.waitFor({ state: 'visible', timeout: 10000 }).then(() => true).catch(() => false))) {
+    .filter({ has: page.getByRole('gridcell', { name: String(invoiceId), exact: true }) })
+    .filter({ has: page.getByRole('gridcell', { name: approvalType, exact: true }) }).first();
+  let found = await row.waitFor({ state: 'visible', timeout: 6000 }).then(() => true).catch(() => false);
+  // The search is free-text, so the id also matches other rows' numbers; the grid renders only
+  // ~10 rows, so the real row can sit further down (MCP-verified: CO #4770 was result row 37).
+  if (!found) {
+    const box = await page.locator('[role="treegrid"]').first().boundingBox().catch(() => null);
+    if (box) {
+      await page.mouse.move(box.x + box.width / 2, box.y + Math.min(150, box.height / 2));
+      let lastMax = -1;
+      for (let k = 0; k < 60 && !found; k++) {
+        await page.mouse.wheel(0, 400);
+        await page.waitForTimeout(300);
+        found = (await row.count()) > 0;
+        const max = await page.evaluate(() => Math.max(-1, ...[...document.querySelectorAll('[role="treegrid"] [role="row"][data-rgrow]')]
+          .map((r) => Number(r.getAttribute('data-rgrow')))));
+        if (max === lastMax) break; // reached the bottom
+        lastMax = max;
+      }
+    }
+  }
+  if (!found) {
     return { ok: false, reason: 'approval row not found after search' };
   }
   const rgrow = await row.getAttribute('data-rgrow');
@@ -1655,10 +1679,20 @@ async function rejectInvoiceApproval(page, invoiceId) {
 
   const dialog = page.locator('[role="dialog"]').filter({ hasText: 'Approval Details' }).first();
   await dialog.waitFor({ state: 'visible', timeout: 15000 });
-  const rejectBtn = dialog.getByRole('button', { name: 'Reject on Behalf' });
+  // When the logged-in user is the current approver the button is plain "Reject";
+  // otherwise it is "Reject on Behalf" (MCP-verified 2026-11-10 on Invoice #30320).
+  const rejectBtn = dialog.getByRole('button', { name: /^Reject( on Behalf)?$/ }).first();
   if (!(await rejectBtn.waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false))) {
+    // e.g. CO #4766: approval shows "Auto-approved (steps skipped)" while the record is still
+    // "Pending Approval" — backend data inconsistency, nothing to click (MCP-verified 2026-11-10).
+    const autoApproved = await dialog.getByText(/Auto-approved/i).count().catch(() => 0);
     await page.keyboard.press('Escape');
-    return { ok: false, reason: 'no "Reject on Behalf" button in Approval Details' };
+    return {
+      ok: false,
+      reason: autoApproved
+        ? 'approval is "Auto-approved (steps skipped)" but record is still Pending Approval — no Reject possible'
+        : 'no "Reject" / "Reject on Behalf" button in Approval Details',
+    };
   }
   await dialog.getByPlaceholder('Enter any remarks or notes about this approval...').fill('Automation cleanup');
   await rejectBtn.click();
@@ -1667,10 +1701,10 @@ async function rejectInvoiceApproval(page, invoiceId) {
   let status = 'Pending Approval';
   for (let i = 0; i < 15 && status === 'Pending Approval'; i++) {
     await page.waitForTimeout(1000);
-    status = await page.evaluate(async (id) => {
-      const res = await fetch(`/api/bird-table?table_name=invoice&row_id=${id}`);
+    status = await page.evaluate(async ({ id, table }) => {
+      const res = await fetch(`/api/bird-table?table_name=${table}&row_id=${id}`);
       return ((await res.json()).rows || [])[0]?.status || 'GONE';
-    }, invoiceId).catch(() => 'Pending Approval');
+    }, { id: invoiceId, table: tableName }).catch(() => 'Pending Approval');
   }
   await page.keyboard.press('Escape').catch(() => { });
   await dialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => { });
@@ -1718,6 +1752,29 @@ async function deleteInvoiceById(page, invoiceId) {
 }
 
 /**
+ * Reopens a locked (Complete/Closed) job via its page's "Reopen Job" button so its invoices can
+ * be deleted. MCP-verified 2026-11-10 on job 6475: invoice DELETE returned 400 "This job is
+ * locked and cannot be modified."; after Reopen Job (POST /api/jobs/<id>/reopen -> 200) the job
+ * is unlocked (status Approved) and the same invoice DELETE returned 200.
+ * @returns {Promise<boolean>} true when the reopen call returned HTTP 200
+ */
+async function reopenLockedJob(page, baseUrl, jobId) {
+  await page.goto(`${baseUrl}/jobs/${jobId}`, { waitUntil: 'domcontentloaded' });
+  const btn = page.getByRole('button', { name: 'Reopen Job' }).first();
+  if (!(await btn.waitFor({ state: 'visible', timeout: 30000 }).then(() => true).catch(() => false))) return false;
+  await btn.click();
+  const dialog = page.getByRole('dialog').filter({ hasText: 'Reopen Job' }).first();
+  await dialog.waitFor({ state: 'visible', timeout: 10000 });
+  const respPromise = page.waitForResponse(
+    (r) => r.request().method() === 'POST' && r.url().includes(`/api/jobs/${jobId}/reopen`),
+    { timeout: 30000 },
+  ).catch(() => null);
+  await dialog.getByRole('button', { name: 'Reopen Job' }).click();
+  const resp = await respPromise;
+  return !!resp && resp.status() === 200;
+}
+
+/**
  * Deletes every invoice, in batches of 50. Invoices that are already deletable
  * (Rejected/Draft/Approved — e.g. rejected by an earlier run) are deleted first; otherwise
  * the next 50 pending invoices are rejected on behalf (Approvals page) and those same 50
@@ -1732,6 +1789,7 @@ async function rejectAndDeleteAllInvoices(page, baseUrl, maxRuntimeMs, jobId) {
   const startTime = Date.now();
   const outOfTime = () => Date.now() - startTime >= maxRuntimeMs;
   const failed = new Set();
+  const reopenedJobs = new Set();
   let deletedCount = 0;
   let rejectedCount = 0;
   const BATCH = 50;
@@ -1770,20 +1828,36 @@ async function rejectAndDeleteAllInvoices(page, baseUrl, maxRuntimeMs, jobId) {
     for (const inv of batch) {
       if (outOfTime() || failed.has(inv.id)) continue;
       let result = await deleteInvoiceById(page, inv.id).catch((e) => ({ status: -1, body: e.message.split('\n')[0] }));
-      // Back-to-back deletes can be refused while the previous one settles; retry briefly.
-      // Known permanent refusals (still pending, or "not in the correct format or range" —
-      // MCP-verified on Invoice #35152 even after rejection) are not retried.
-      const permanent = (body) => /pending approval|not in the correct format/i.test(body);
-      for (let retry = 0; retry < 2 && result.status === 400 && !permanent(result.body); retry++) {
+      // Every 400 gets up to 2 retries (5s apart) so a transient refusal is never reported as a failure.
+      // Known 400s (MCP-verified 2026-11-10): "job is locked" is then handled below by reopening the
+      // job; "not in the correct format or range" also fails from the app's own Delete button (22
+      // invoices with attachments on job 3906, empty Draft #34940 on job 3828) — a backend bug.
+      const MAX_RETRIES = 2;
+      for (let retry = 0; result.status === 400 && retry < MAX_RETRIES; retry++) {
+        console.log(`[cleanup-invoices-delete] Invoice #${inv.id} got HTTP 400 — retry ${retry + 1}/${MAX_RETRIES} in 5s.`);
         await page.waitForTimeout(5000);
         result = await deleteInvoiceById(page, inv.id).catch((e) => ({ status: -1, body: e.message.split('\n')[0] }));
+      }
+      // Locked (Complete/Closed) job: reopen it once, then retry the delete.
+      if (result.status === 400 && /job is locked/i.test(result.body) && inv.jobId && !reopenedJobs.has(inv.jobId)) {
+        reopenedJobs.add(inv.jobId);
+        const reopened = await reopenLockedJob(page, baseUrl, inv.jobId).catch(() => false);
+        console.log(`[cleanup-invoices-delete] Job ${inv.jobId} was locked — Reopen Job ${reopened ? 'succeeded (HTTP 200)' : 'FAILED'}.`);
+        await page.goto(`${baseUrl}/invoices`, { waitUntil: 'domcontentloaded' });
+        await page.locator('input[placeholder="Search..."]').first().waitFor({ state: 'visible', timeout: 60000 });
+        if (reopened) {
+          result = await deleteInvoiceById(page, inv.id).catch((e) => ({ status: -1, body: e.message.split('\n')[0] }));
+        }
+      }
+      if (result.status === 400 && /not in the correct format/i.test(result.body)) {
+        result.body += ' (backend bug: the app\'s own Delete button fails the same way — e.g. invoices with attachments)';
       }
       if (result.status === 200) {
         deletedCount += 1;
         console.log(`[cleanup-invoices-delete] Deleted Invoice #${inv.id} (HTTP 200) — total deleted: ${deletedCount}`);
       } else {
         failed.add(inv.id);
-        console.log(`[cleanup-invoices-delete] FAILED to delete Invoice #${inv.id}: HTTP ${result.status} ${result.body.slice(0, 150)} — skipping it.`);
+        console.log(`[cleanup-invoices-delete] FAILED to delete Invoice #${inv.id}: HTTP ${result.status} ${result.body.slice(0, 250)} — skipping it.`);
       }
     }
   }
@@ -1791,6 +1865,197 @@ async function rejectAndDeleteAllInvoices(page, baseUrl, maxRuntimeMs, jobId) {
   if (outOfTime()) console.log('[cleanup-invoices-delete] Time budget reached, stopping.');
   return { deletedCount, rejectedCount, failedCount: failed.size, skippedInvoices: [...failed].map((id) => `Invoice #${id}`) };
 }
+
+/**
+ * All change orders from the grid's own read API (read-only), oldest first.
+ * @returns {Promise<{id:number,status:string,jobId:number}[]>}
+ */
+async function fetchChangeOrderList(page) {
+  return page.evaluate(async () => {
+    const res = await fetch('/api/bird-table?table_name=change_order');
+    const body = await res.json();
+    return (body.rows || [])
+      .map((r) => ({ id: r.id, status: r.status, jobId: r.job_id }))
+      .sort((a, b) => a.id - b.id);
+  });
+}
+
+/**
+ * Deletes one change order from /change-orders: search its id, find the row whose link ends in
+ * /change-orders/<id>, click "Delete Change Order", confirm. Status code decides success; the
+ * body is only read on failure, capped at 2s (it can be slow).
+ * MCP-verified 2026-11-10: DELETE /api/bird-table/rows {table_name:"change_order", row_id}.
+ * @returns {Promise<{status:number, body:string}>}
+ */
+async function deleteChangeOrderById(page, coId) {
+  if (await page.locator('[role="dialog"]').count()) {
+    await page.keyboard.press('Escape').catch(() => {});
+  }
+  const search = page.locator('input[placeholder="Search..."]').first();
+  await search.fill(String(coId));
+  await page.keyboard.press('Enter');
+
+  const link = page.locator(`[role="treegrid"] [role="row"][data-rgrow] a[href$="/change-orders/${coId}"]`).first();
+  if (!(await link.waitFor({ state: 'visible', timeout: 10000 }).then(() => true).catch(() => false))) {
+    return { status: 0, body: 'row not found' };
+  }
+  const rgrow = await link.locator("xpath=ancestor::div[@role='row']").first().getAttribute('data-rgrow');
+  await page.locator(`[role="treegrid"] [role="row"][data-rgrow="${rgrow}"]`)
+    .getByRole('button', { name: 'Delete Change Order' }).first().click({ timeout: 10000 });
+  const dialog = page.getByRole('dialog').filter({ hasText: 'Delete Change Order' }).first();
+  await dialog.waitFor({ state: 'visible', timeout: 10000 });
+  const responsePromise = page.waitForResponse(
+    (r) => r.url().includes('/api/bird-table/rows') && r.request().method() === 'DELETE'
+      && (r.request().postData() || '').includes(`"row_id":"${coId}"`),
+    { timeout: 30000 },
+  );
+  await dialog.getByRole('button', { name: 'Delete', exact: true }).click();
+  const resp = await responsePromise;
+  const body = resp.status() === 200
+    ? ''
+    : await Promise.race([resp.text().catch(() => ''), new Promise((r) => setTimeout(() => r(''), 2000))]);
+  await dialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+  return { status: resp.status(), body };
+}
+
+/**
+ * Deletes change orders oldest-first in batches of 50: the batch's "Pending Approval" ones are
+ * rejected on the Approvals page first, then the whole batch is deleted on /change-orders.
+ * Nothing ever fails the run: any change order that can't be rejected/deleted is skipped and the
+ * loop moves on. MCP-verified 2026-11-10:
+ *  - Pending Approval -> 400 "Change order is pending approval and cannot be deleted"; after
+ *    Reject (Approval Type "Change Order") it becomes Rejected and DELETE returns 200.
+ *  - Some need an older one gone first: 400 "Change order cannot be deleted, please delete
+ *    'Change Order #8745' first" — so work oldest-first, and once the list is exhausted, take
+ *    another pass over the skipped ones as long as the previous pass deleted something.
+ *  - "job is locked" -> reopen the job once (same as invoices), then retry.
+ */
+async function rejectAndDeleteAllChangeOrders(page, baseUrl, maxRuntimeMs) {
+  const TAG = '[cleanup-change-orders]';
+  const start = Date.now();
+  const outOfTime = () => Date.now() - start >= maxRuntimeMs;
+  const BATCH = 50;
+  const MAX_RETRIES = 2;
+  const skipped = new Map(); // id -> last reason (skipped in the current pass)
+  const reopenedJobs = new Set();
+  let deletedCount = 0;
+  let rejectedCount = 0;
+  let deletedThisPass = 0;
+  let pass = 1;
+
+  const openList = async (route) => {
+    await page.goto(`${baseUrl}${route}`, { waitUntil: 'domcontentloaded' });
+    await page.locator('input[placeholder="Search..."]').first().waitFor({ state: 'visible', timeout: 60000 });
+  };
+  const safeDelete = (id) => deleteChangeOrderById(page, id)
+    .catch((e) => ({ status: -1, body: String(e.message || e).split('\n')[0] }));
+
+  while (!outOfTime()) {
+    const all = await fetchChangeOrderList(page).catch(() => null);
+    if (!all) { await page.waitForTimeout(5000); continue; }
+    const todo = all.filter((co) => !skipped.has(co.id));
+    if (todo.length === 0) {
+      if (skipped.size > 0 && deletedThisPass > 0) {
+        console.log(`${TAG} Pass ${pass} done (${deletedThisPass} deleted) — retrying ${skipped.size} skipped change order(s) in pass ${pass + 1}.`);
+        skipped.clear();
+        deletedThisPass = 0;
+        pass += 1;
+        continue;
+      }
+      console.log(`${TAG} Nothing left that can be deleted (${all.length} remaining, all skipped).`);
+      break;
+    }
+
+    const batch = todo.slice(0, BATCH);
+    const pending = batch.filter((co) => co.status === 'Pending Approval');
+    console.log(`${TAG} ${all.length} change order(s) remaining; batch of ${batch.length} (${pending.length} pending approval).`);
+
+    if (pending.length > 0) {
+      await openList('/approvals/all-approvals').catch(() => {});
+      for (const co of pending) {
+        if (outOfTime()) break;
+        const { ok, reason } = await rejectInvoiceApproval(page, co.id, { approvalType: 'Change Order', tableName: 'change_order' })
+          .catch((e) => ({ ok: false, reason: String(e.message || e).split('\n')[0] }));
+        if (ok) {
+          rejectedCount += 1;
+          console.log(`${TAG} Rejected approval for Change Order #${co.id} (now ${reason}) — total rejected: ${rejectedCount}`);
+        } else {
+          skipped.set(co.id, `reject failed: ${reason}`);
+          console.log(`${TAG} Could not reject Change Order #${co.id}: ${reason} — skipping it.`);
+        }
+      }
+    }
+
+    await openList('/change-orders').catch(() => {});
+    for (const co of batch) {
+      if (outOfTime() || skipped.has(co.id)) continue;
+      let result = await safeDelete(co.id);
+      for (let retry = 0; result.status === 400 && retry < MAX_RETRIES; retry++) {
+        console.log(`${TAG} Change Order #${co.id} got HTTP 400 — retry ${retry + 1}/${MAX_RETRIES} in 3s.`);
+        await page.waitForTimeout(3000);
+        result = await safeDelete(co.id);
+      }
+      if (result.status === 400 && /job is locked/i.test(result.body) && co.jobId && !reopenedJobs.has(co.jobId)) {
+        reopenedJobs.add(co.jobId);
+        const reopened = await reopenLockedJob(page, baseUrl, co.jobId).catch(() => false);
+        console.log(`${TAG} Job ${co.jobId} was locked — Reopen Job ${reopened ? 'succeeded (HTTP 200)' : 'FAILED'}.`);
+        await openList('/change-orders').catch(() => {});
+        if (reopened) result = await safeDelete(co.id);
+      }
+      if (result.status === 200) {
+        deletedCount += 1;
+        deletedThisPass += 1;
+        console.log(`${TAG} Deleted Change Order #${co.id} (HTTP 200) — total deleted: ${deletedCount}`);
+      } else {
+        skipped.set(co.id, `HTTP ${result.status} ${result.body.slice(0, 200)}`);
+        console.log(`${TAG} Could not delete Change Order #${co.id}: HTTP ${result.status} ${result.body.slice(0, 200)} — skipping to the next one.`);
+      }
+    }
+  }
+
+  if (outOfTime()) console.log(`${TAG} Time budget reached, stopping.`);
+  return { deletedCount, rejectedCount, skipped };
+}
+
+test.describe('Change orders cleanup', () => {
+  test('TC273 @cleanup @changeorder Reject pending approvals and delete change orders for up to 1 hour, verified via API status 200', async ({ browser }) => {
+    const RUNTIME_BUDGET_MS = 60 * 60 * 1000; // 1 hour
+    test.setTimeout(RUNTIME_BUDGET_MS);
+    // Stop starting new work 3 min early so the summary always logs inside the 1h timeout.
+    const workBudgetMs = process.env.CHANGE_ORDER_CLEANUP_MINUTES
+      ? Number(process.env.CHANGE_ORDER_CLEANUP_MINUTES) * 60 * 1000
+      : RUNTIME_BUDGET_MS - 3 * 60 * 1000;
+
+    const context = await browser.newContext({ storageState: 'sessionState.json' });
+    const page = await context.newPage();
+    try {
+      let baseUrl = '';
+      await test.step('Open Change Orders (reused session)', async () => {
+        const dashboardUrl = process.env.DASHBOARD_URL || data.dashboardUrl;
+        const origin = /^https?:\/\//.test(dashboardUrl) ? new URL(dashboardUrl).origin : '';
+        await page.goto(`${origin}/change-orders`, { waitUntil: 'domcontentloaded' });
+        if ((page.url() || '').includes('/login')) {
+          throw new Error('sessionState.json is not authenticated. Refresh sessionState once, then rerun this test.');
+        }
+        await expect(page.locator('input[placeholder="Search..."]').first()).toBeVisible({ timeout: 60000 });
+        baseUrl = new URL(page.url()).origin;
+      });
+
+      await test.step('Reject pending approvals, then delete change orders (skip any that cannot be deleted)', async () => {
+        const { deletedCount, rejectedCount, skipped } = await rejectAndDeleteAllChangeOrders(page, baseUrl, workBudgetMs);
+        console.log(`[cleanup-change-orders] Summary — rejected: ${rejectedCount}, deleted (HTTP 200): ${deletedCount}, skipped: ${skipped.size}`);
+        if (skipped.size > 0) {
+          const list = [...skipped].map(([id, why]) => `#${id}: ${why}`);
+          console.log(`[cleanup-change-orders] Skipped (left in place): ${list.join(' | ').slice(0, 4000)}`);
+          test.info().annotations.push({ type: 'change-orders-skipped', description: list.join('; ').slice(0, 8000) });
+        }
+        // Skipped change orders never fail the run (by design); only a broken setup does.
+      });
+    } finally {
+      await context.close().catch(() => {});
+    }
+  });
+});
 
 test.describe('Invoices cleanup', () => {
   test('TC267 @cleanup @invoice Delete invoices from the global Invoices list top to bottom, verified via API response', async ({ browser }) => {
@@ -2080,6 +2345,256 @@ async function deleteApprovalTemplatesTopToBottomViaApi(page, protectedPropertie
 
   return { deletedCount, failedCount, keptCount: stats.kept };
 }
+
+/** Minimal RFC4180 CSV parser (quoted fields, "" escapes, commas/newlines inside quotes). */
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let field = '';
+  let inQuotes = false;
+  const src = text.replace(/^﻿/, '');
+  for (let i = 0; i < src.length; i += 1) {
+    const ch = src[i];
+    if (inQuotes) {
+      if (ch === '"' && src[i + 1] === '"') { field += '"'; i += 1; }
+      else if (ch === '"') inQuotes = false;
+      else field += ch;
+    } else if (ch === '"') inQuotes = true;
+    else if (ch === ',') { row.push(field); field = ''; }
+    else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && src[i + 1] === '\n') i += 1;
+      row.push(field); rows.push(row); row = []; field = '';
+    } else field += ch;
+  }
+  if (field !== '' || row.length) { row.push(field); rows.push(row); }
+  return rows.filter((r) => r.some((c) => c !== ''));
+}
+
+// How many leading CSV columns identify a row. The CSV export is "current table view, as shown",
+// so its first columns are exactly the grid's first visible cells:
+//   Bids: Bid Name, Property, Status, Vendors, Linked Job
+//   Jobs: Title, Status, Job Type, Financial Type, Description
+const DRAFT_MATCH_COLUMNS = 5;
+const normCell = (t) => String(t ?? '').replace(/✕/g, '').replace(/\s+/g, ' ').trim().replace(/^—$/, '');
+
+/**
+ * Clicks Export on a bird-table list page and saves the CSV. Bids downloads straight away;
+ * Jobs opens a menu where "Export CSV" (current table view) must be picked.
+ * Returns the row keys (first DRAFT_MATCH_COLUMNS columns) of every row whose Status equals targetStatus.
+ * @returns {Promise<{draftKeys:Map<string,string>, total:number}>} key -> display name
+ */
+async function exportDraftRowKeys(page, fileName, logTag, targetStatus) {
+  const dir = path.join(process.cwd(), 'downloads');
+  fs.mkdirSync(dir, { recursive: true });
+  const downloadPromise = page.waitForEvent('download', { timeout: 120000 });
+  await page.keyboard.press('Escape').catch(() => {});
+  await page.getByRole('button', { name: 'Export', exact: true }).click();
+  const csvItem = page.getByRole('menuitem').filter({ hasText: 'Export CSV' });
+  if (await csvItem.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false)) {
+    await csvItem.click();
+  }
+  const download = await downloadPromise;
+  const file = path.join(dir, fileName);
+  await download.saveAs(file);
+
+  const [header = [], ...records] = parseCsv(fs.readFileSync(file, 'utf8'));
+  const statusIdx = header.findIndex((h) => /^status$/i.test(h.trim()));
+  if (statusIdx < 0 || statusIdx >= DRAFT_MATCH_COLUMNS) {
+    throw new Error(`[${logTag}] Export has no "Status" column in its first ${DRAFT_MATCH_COLUMNS} columns. Header: ${header.join(', ')}`);
+  }
+  const draftKeys = new Map();
+  for (const r of records) {
+    if (normCell(r[statusIdx]).toLowerCase() !== targetStatus.toLowerCase()) continue;
+    const cells = r.slice(0, DRAFT_MATCH_COLUMNS).map(normCell);
+    draftKeys.set(cells.join('|'), cells[0]);
+  }
+  return { draftKeys, total: records.length };
+}
+
+/**
+ * Scrolls a revogrid list top to bottom (it virtualizes rows and columns) and deletes every
+ * rendered row whose first DRAFT_MATCH_COLUMNS data cells equal a Draft row from the CSV.
+ * Each delete is verified by the DELETE /api/bird-table/rows HTTP status only (body never awaited).
+ * @returns {Promise<{deleted:string[], failed:Map<string,string>}>}
+ */
+async function deleteDraftRowsFromGrid(page, { tableName, draftKeys, deadline, logTag }) {
+  const deleted = [];
+  const failed = new Map();
+  const attempted = new Set(); // one attempt per key per pass; the next export pass catches duplicates
+  const anyRow = page.locator('[role="treegrid"] [role="row"][data-rgrow]');
+
+  const scrollBy = async (dy) => {
+    const box = await page.locator('[role="treegrid"]').boundingBox();
+    if (box) await page.mouse.move(box.x + box.width / 2, box.y + Math.min(box.height / 2, 200));
+    await page.mouse.wheel(0, dy);
+    await page.waitForTimeout(400);
+  };
+  await anyRow.first().waitFor({ state: 'visible', timeout: 60000 });
+  await scrollBy(-1_000_000);
+
+  let lastMaxRow = -1;
+  let stalls = 0;
+  while (Date.now() < deadline) {
+    // Rendered rows: data cells of every pane sharing a data-rgrow, minus the checkbox and Actions panes.
+    const readRows = () => page.evaluate((n) => {
+      const byIdx = new Map();
+      document.querySelectorAll('[role="treegrid"] [role="row"][data-rgrow]').forEach((row) => {
+        if (row.querySelector('button[aria-label="Delete Row"]')) return; // Actions pane
+        const cells = [...row.querySelectorAll('[role="gridcell"]')];
+        if (cells.length === 1 && row.querySelector('input[type="checkbox"], [role="checkbox"]')) return; // selection pane
+        const idx = Number(row.getAttribute('data-rgrow'));
+        const list = byIdx.get(idx) || [];
+        cells.forEach((c) => list.push(c.textContent));
+        byIdx.set(idx, list);
+      });
+      return [...byIdx].map(([idx, cells]) => ({ idx, cells: cells.slice(0, n) }));
+    }, DRAFT_MATCH_COLUMNS).then((rows) => rows.map((v) => ({ ...v, key: v.cells.map(normCell).join('|') })));
+    const visible = await readRows();
+    const target = visible.find((v) => draftKeys.has(v.key) && !attempted.has(v.key));
+
+    if (target) {
+      const label = draftKeys.get(target.key);
+      attempted.add(target.key);
+      try {
+        // Re-check right before clicking: the grid may have re-rendered since the scan.
+        const now = (await readRows()).find((v) => v.idx === target.idx);
+        if (!now || now.key !== target.key) { attempted.delete(target.key); await page.waitForTimeout(500); continue; }
+        const attemptDelete = async (idx) => {
+          const btn = page.locator(`[role="treegrid"] [role="row"][data-rgrow="${idx}"] button[aria-label="Delete Row"]`).first();
+          if (!(await btn.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false))) {
+            throw new Error('row has no Delete action');
+          }
+          // A partly hidden row's first click only scrolls it into view (MCP-verified), so retry.
+          const confirm = page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true });
+          let opened = false;
+          for (let i = 0; i < 3 && !opened; i += 1) {
+            await btn.click();
+            opened = await confirm.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+          }
+          if (!opened) throw new Error('delete confirmation dialog did not open');
+          const respPromise = page.waitForResponse(
+            (r) => r.request().method() === 'DELETE'
+              && r.url().includes('/api/bird-table/rows')
+              && (r.request().postData() || '').includes(`"table_name":"${tableName}"`),
+            { timeout: 60000 },
+          );
+          await confirm.click();
+          return respPromise.catch(() => null);
+        };
+
+        let resp = await attemptDelete(target.idx);
+        // A 400 gets up to 2 retries (5s apart) so a transient refusal isn't reported as a failure.
+        for (let retry = 1; retry <= 2 && resp && resp.status() === 400; retry += 1) {
+          console.log(`[${logTag}] "${label}" got HTTP 400 — retry ${retry}/2 in 5s.`);
+          await page.keyboard.press('Escape').catch(() => {});
+          await page.waitForTimeout(5000);
+          const again = (await readRows()).find((v) => v.key === target.key); // same row, re-located
+          if (!again) break;
+          resp = await attemptDelete(again.idx);
+        }
+        if (resp && resp.status() === 200) {
+          deleted.push(label);
+          const rowId = (/"row_id":"?(\d+)/.exec(resp.request().postData() || '') || [])[1];
+          console.log(`[${logTag}] Deleted "${label}" (#${rowId}) (HTTP 200)`);
+        } else {
+          const reason = resp ? `HTTP ${resp.status()}` : 'no DELETE response within 60s';
+          failed.set(target.key, reason);
+          console.warn(`[${logTag}] Could not delete "${label}": ${reason}`);
+        }
+      } catch (e) {
+        failed.set(target.key, e.message);
+        console.warn(`[${logTag}] Could not delete "${label}": ${e.message}`);
+        await page.keyboard.press('Escape').catch(() => {});
+      }
+      await page.waitForTimeout(800); // grid re-renders after a delete; rescan the same position
+      continue;
+    }
+
+    // Nothing to delete in view: scroll down; stop when the last rendered row stops changing.
+    const maxRow = visible.reduce((m, v) => Math.max(m, v.idx), -1);
+    stalls = maxRow === lastMaxRow ? stalls + 1 : 0;
+    if (stalls >= 2) break;
+    lastMaxRow = maxRow;
+    await scrollBy(300);
+  }
+
+  const failedByName = new Map([...failed].map(([k, why]) => [draftKeys.get(k), why]));
+  return { deleted, failed: failedByName };
+}
+
+/**
+ * Shared flow for TC271/TC272: open list page -> export CSV -> delete rows with targetStatus ->
+ * re-export to confirm, repeating until none are left or the work budget runs out.
+ */
+const STATUS_CLEANUP_TIMEOUT_MS = 5 * 60 * 1000; // hard cap per test
+async function runDraftCleanup(browser, { route, tableName, csvName, logTag, budgetEnv, targetStatus }) {
+  // Default: stop deleting at 4 min so the summary logs well inside the 5-min test timeout.
+  const workBudgetMs = process.env[budgetEnv] ? Number(process.env[budgetEnv]) * 60 * 1000 : 4 * 60 * 1000;
+  const context = await browser.newContext({ storageState: 'sessionState.json', acceptDownloads: true });
+  const page = await context.newPage();
+  const openList = async () => {
+    const dashboardUrl = process.env.DASHBOARD_URL || data.dashboardUrl;
+    const origin = /^https?:\/\//.test(dashboardUrl) ? new URL(dashboardUrl).origin : '';
+    await page.goto(`${origin}${route}`, { waitUntil: 'domcontentloaded' });
+    if ((page.url() || '').includes('/login')) {
+      throw new Error('sessionState.json is not authenticated. Refresh sessionState once, then rerun this test.');
+    }
+    // Wait for grid data before exporting/scrolling.
+    await expect(page.locator('[role="treegrid"] [role="row"][data-rgrow="0"]').first()).toBeVisible({ timeout: 60000 });
+    await page.waitForTimeout(1500);
+  };
+
+  try {
+    await test.step(`Open ${route}`, openList);
+    await test.step(`Export CSV, delete "${targetStatus}" rows (HTTP 200 only), re-export to confirm`, async () => {
+      const deadline = Date.now() + workBudgetMs;
+      const allFailed = new Map();
+      let deletedCount = 0;
+      let remaining = 0;
+
+      for (let pass = 1; Date.now() < deadline; pass += 1) {
+        const { draftKeys, total } = await exportDraftRowKeys(page, csvName, logTag, targetStatus);
+        remaining = draftKeys.size;
+        console.log(`[${logTag}] Export pass ${pass}: ${total} rows, ${draftKeys.size} ${targetStatus}`);
+        for (const k of [...draftKeys.keys()]) if (allFailed.has(draftKeys.get(k))) draftKeys.delete(k);
+        if (draftKeys.size === 0) break;
+
+        const { deleted, failed } = await deleteDraftRowsFromGrid(page, { tableName, draftKeys, deadline, logTag });
+        deletedCount += deleted.length;
+        failed.forEach((v, k) => allFailed.set(k, v));
+        if (deleted.length === 0) break; // nothing more we can delete
+        await openList(); // fresh grid for the confirmation export
+      }
+
+      console.log(`[${logTag}] Summary — deleted: ${deletedCount}, failed: ${allFailed.size}, "${targetStatus}" rows in last export (before its deletes): ${remaining}`);
+      if (allFailed.size > 0) {
+        test.info().annotations.push({
+          type: `${tableName}-not-deleted`,
+          description: [...allFailed].map(([k, why]) => `${k}: ${why}`).join('; '),
+        });
+      }
+      expect(allFailed.size, `every attempted "${targetStatus}" delete should return HTTP 200`).toBe(0);
+    });
+  } finally {
+    await context.close().catch(() => {});
+  }
+}
+
+test.describe('Status cleanup (CSV export driven)', () => {
+  test('TC271 @cleanup @bid Delete all Awarded status bids (from the Bids CSV export), verified via API status 200', async ({ browser }) => {
+    test.setTimeout(STATUS_CLEANUP_TIMEOUT_MS);
+    await runDraftCleanup(browser, {
+      route: '/bids', tableName: 'ai_bid', csvName: 'ai_bid-data.csv', logTag: 'cleanup-bids', budgetEnv: 'BID_CLEANUP_MINUTES', targetStatus: 'Awarded',
+    });
+  });
+
+  test('TC272 @cleanup @job Delete all Draft status jobs (from the Jobs CSV export), verified via API status 200', async ({ browser }) => {
+    test.setTimeout(STATUS_CLEANUP_TIMEOUT_MS);
+    await runDraftCleanup(browser, {
+      route: '/jobs', tableName: 'job', csvName: 'job-data.csv', logTag: 'cleanup-draft-jobs', budgetEnv: 'JOB_DRAFT_CLEANUP_MINUTES', targetStatus: 'Draft',
+    });
+  });
+});
 
 test.describe('Approval templates cleanup', () => {
   test('TC268 @cleanup @approvals Delete approval templates not belonging to the protected sample properties', async ({ browser }) => {
