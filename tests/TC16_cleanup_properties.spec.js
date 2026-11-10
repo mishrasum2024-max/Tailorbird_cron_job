@@ -1605,6 +1605,193 @@ async function deleteInvoicesTopToBottomViaApi(page, maxRuntimeMs) {
   return { deletedCount, failedCount, skippedInvoices: [...skipSet] };
 }
 
+/**
+ * Invoice ids and statuses straight from the grid's own read API (read-only), so the
+ * cleanup can target every invoice instead of only the ~14 rows revogrid renders.
+ * @param {import('@playwright/test').Page} page
+ * @param {number} [jobId] only invoices on this job (TC269); all invoices when omitted (TC267)
+ * @returns {Promise<{id: number, status: string}[]>}
+ */
+async function fetchInvoiceList(page, jobId) {
+  return page.evaluate(async (jobId) => {
+    const res = await fetch('/api/bird-table?table_name=invoice');
+    const body = await res.json();
+    return (body.rows || [])
+      .filter((r) => jobId == null || r.job_id === jobId)
+      .map((r) => ({ id: r.id, status: r.status }));
+  }, jobId ?? null);
+}
+
+/**
+ * Rejects a pending invoice approval via Approvals > View Details > "Reject on Behalf".
+ * MCP-verified 2026-11-09: DELETE on a "Pending Approval" invoice returns 400 "Invoice is
+ * pending approval and cannot be deleted"; after rejecting on behalf (notes are required)
+ * the invoice status becomes "Rejected" and DELETE returns 200. The reject is a server
+ * action (no /api/ call), so success is confirmed by polling the invoice's status.
+ * Expects the page to already be on /approvals.
+ * @param {import('@playwright/test').Page} page
+ * @param {number} invoiceId
+ * @returns {Promise<{ok: boolean, reason: string}>}
+ */
+async function rejectInvoiceApproval(page, invoiceId) {
+  // Close any dialog left over from the previous invoice so it can't block the search.
+  if (await page.locator('[role="dialog"]').count()) {
+    await page.keyboard.press('Escape');
+    await page.locator('[role="dialog"]').first().waitFor({ state: 'hidden', timeout: 5000 }).catch(() => { });
+  }
+  const search = page.locator('input[placeholder="Search..."]').first();
+  await search.fill(String(invoiceId));
+  await page.keyboard.press('Enter');
+
+  // Note: locator.isVisible() ignores its timeout and returns immediately, so wait explicitly.
+  // Match the exact ID cell: the Invoice Number column is often a custom value (e.g. "PAY-1137").
+  const row = page.locator('[role="row"][data-rgrow]')
+    .filter({ has: page.getByRole('gridcell', { name: String(invoiceId), exact: true }) }).first();
+  if (!(await row.waitFor({ state: 'visible', timeout: 10000 }).then(() => true).catch(() => false))) {
+    return { ok: false, reason: 'approval row not found after search' };
+  }
+  const rgrow = await row.getAttribute('data-rgrow');
+  await page.locator(`[role="row"][data-rgrow="${rgrow}"] button[title="View Details"]`).first().click();
+
+  const dialog = page.locator('[role="dialog"]').filter({ hasText: 'Approval Details' }).first();
+  await dialog.waitFor({ state: 'visible', timeout: 15000 });
+  const rejectBtn = dialog.getByRole('button', { name: 'Reject on Behalf' });
+  if (!(await rejectBtn.waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false))) {
+    await page.keyboard.press('Escape');
+    return { ok: false, reason: 'no "Reject on Behalf" button in Approval Details' };
+  }
+  await dialog.getByPlaceholder('Enter any remarks or notes about this approval...').fill('Automation cleanup');
+  await rejectBtn.click();
+
+  // Source of truth: the invoice leaves "Pending Approval" (toast takes ~4s and can be missed).
+  let status = 'Pending Approval';
+  for (let i = 0; i < 15 && status === 'Pending Approval'; i++) {
+    await page.waitForTimeout(1000);
+    status = await page.evaluate(async (id) => {
+      const res = await fetch(`/api/bird-table?table_name=invoice&row_id=${id}`);
+      return ((await res.json()).rows || [])[0]?.status || 'GONE';
+    }, invoiceId).catch(() => 'Pending Approval');
+  }
+  await page.keyboard.press('Escape').catch(() => { });
+  await dialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => { });
+  return status === 'Pending Approval'
+    ? { ok: false, reason: 'still Pending Approval 15s after Reject on Behalf' }
+    : { ok: true, reason: status };
+}
+
+/**
+ * Deletes one invoice from the global Invoices list by searching its id and confirming
+ * the "Delete Invoice" dialog. Returns the DELETE /api/bird-table/rows status/body.
+ * Expects the page to already be on /invoices.
+ * @param {import('@playwright/test').Page} page
+ * @param {number} invoiceId
+ * @returns {Promise<{status: number, body: string}>}
+ */
+async function deleteInvoiceById(page, invoiceId) {
+  const grid = invoiceGridLocator(page);
+  const search = page.locator('input[placeholder="Search..."]').first();
+  await search.fill(String(invoiceId));
+  await page.keyboard.press('Enter');
+
+  // Link text is often a custom number (e.g. "PAY-1137"); its href always ends in /invoices/<id>.
+  const link = grid.locator(`[role="row"][data-rgrow] a[href$="/invoices/${invoiceId}"]`).first();
+  if (!(await link.waitFor({ state: 'visible', timeout: 10000 }).then(() => true).catch(() => false))) return { status: 0, body: 'row not found' };
+  const rgrow = await link.locator("xpath=ancestor::div[@role='row']").first().getAttribute('data-rgrow');
+
+  const deleteBtn = grid.locator(`[role="row"][data-rgrow="${rgrow}"]`).getByRole('button', { name: 'Delete Invoice' }).first();
+  await deleteBtn.click({ timeout: 10000 });
+  const dialog = page.locator('[role="dialog"]').filter({ hasText: 'Delete Invoice' }).first();
+  await dialog.waitFor({ state: 'visible', timeout: 10000 });
+  const responsePromise = page.waitForResponse(
+    (r) => r.url().includes('/api/bird-table/rows') && r.request().method() === 'DELETE',
+    { timeout: 20000 }
+  );
+  await dialog.getByRole('button', { name: 'Delete', exact: true }).click();
+  const resp = await responsePromise;
+  // Status code alone decides success; the body can be slow to arrive, so it is only read
+  // (and capped at 2s) on failure, to log the reason.
+  const body = resp.status() === 200
+    ? ''
+    : await Promise.race([resp.text().catch(() => ''), new Promise((r) => setTimeout(() => r(''), 2000))]);
+  await dialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => { });
+  return { status: resp.status(), body };
+}
+
+/**
+ * Deletes every invoice, in batches of 50. Invoices that are already deletable
+ * (Rejected/Draft/Approved — e.g. rejected by an earlier run) are deleted first; otherwise
+ * the next 50 pending invoices are rejected on behalf (Approvals page) and those same 50
+ * are deleted straight away (Invoices page) before moving on, so rejected-but-undeleted
+ * invoices never pile up.
+ * @param {import('@playwright/test').Page} page
+ * @param {string} baseUrl
+ * @param {number} maxRuntimeMs
+ * @param {number} [jobId] limit to one job's invoices (TC269)
+ */
+async function rejectAndDeleteAllInvoices(page, baseUrl, maxRuntimeMs, jobId) {
+  const startTime = Date.now();
+  const outOfTime = () => Date.now() - startTime >= maxRuntimeMs;
+  const failed = new Set();
+  let deletedCount = 0;
+  let rejectedCount = 0;
+  const BATCH = 50;
+
+  while (!outOfTime()) {
+    const invoices = (await fetchInvoiceList(page, jobId)).filter((inv) => !failed.has(inv.id));
+    if (invoices.length === 0) {
+      console.log('[cleanup-invoices-delete] No invoices left to delete.');
+      break;
+    }
+    const ready = invoices.filter((inv) => inv.status !== 'Pending Approval');
+    const batch = (ready.length > 0 ? ready : invoices).slice(0, BATCH);
+    console.log(`[cleanup-invoices-delete] ${invoices.length} invoice(s) remaining (${ready.length} already deletable); ` +
+      `${ready.length > 0 ? 'deleting' : 'rejecting then deleting'} batch of ${batch.length}.`);
+
+    const pending = batch.filter((inv) => inv.status === 'Pending Approval');
+    if (pending.length > 0) {
+      await page.goto(`${baseUrl}/approvals/all-approvals`, { waitUntil: 'domcontentloaded' });
+      await page.locator('input[placeholder="Search..."]').first().waitFor({ state: 'visible', timeout: 60000 });
+      for (const inv of pending) {
+        if (outOfTime()) break;
+        const { ok, reason } = await rejectInvoiceApproval(page, inv.id)
+          .catch((e) => ({ ok: false, reason: e.message.split('\n')[0] }));
+        if (ok) {
+          rejectedCount += 1;
+          console.log(`[cleanup-invoices-delete] Rejected approval for Invoice #${inv.id} (now ${reason}) — total rejected: ${rejectedCount}`);
+        } else {
+          failed.add(inv.id);
+          console.log(`[cleanup-invoices-delete] Could not reject approval for Invoice #${inv.id}: ${reason} — skipping it.`);
+        }
+      }
+    }
+
+    await page.goto(`${baseUrl}/invoices`, { waitUntil: 'domcontentloaded' });
+    await page.locator('input[placeholder="Search..."]').first().waitFor({ state: 'visible', timeout: 60000 });
+    for (const inv of batch) {
+      if (outOfTime() || failed.has(inv.id)) continue;
+      let result = await deleteInvoiceById(page, inv.id).catch((e) => ({ status: -1, body: e.message.split('\n')[0] }));
+      // Back-to-back deletes can be refused while the previous one settles; retry briefly.
+      // Known permanent refusals (still pending, or "not in the correct format or range" —
+      // MCP-verified on Invoice #35152 even after rejection) are not retried.
+      const permanent = (body) => /pending approval|not in the correct format/i.test(body);
+      for (let retry = 0; retry < 2 && result.status === 400 && !permanent(result.body); retry++) {
+        await page.waitForTimeout(5000);
+        result = await deleteInvoiceById(page, inv.id).catch((e) => ({ status: -1, body: e.message.split('\n')[0] }));
+      }
+      if (result.status === 200) {
+        deletedCount += 1;
+        console.log(`[cleanup-invoices-delete] Deleted Invoice #${inv.id} (HTTP 200) — total deleted: ${deletedCount}`);
+      } else {
+        failed.add(inv.id);
+        console.log(`[cleanup-invoices-delete] FAILED to delete Invoice #${inv.id}: HTTP ${result.status} ${result.body.slice(0, 150)} — skipping it.`);
+      }
+    }
+  }
+
+  if (outOfTime()) console.log('[cleanup-invoices-delete] Time budget reached, stopping.');
+  return { deletedCount, rejectedCount, failedCount: failed.size, skippedInvoices: [...failed].map((id) => `Invoice #${id}`) };
+}
+
 test.describe('Invoices cleanup', () => {
   test('TC267 @cleanup @invoice Delete invoices from the global Invoices list top to bottom, verified via API response', async ({ browser }) => {
     // This test runs for up to 3 hours, deleting invoices from the top of the
@@ -1649,10 +1836,15 @@ test.describe('Invoices cleanup', () => {
           await expect(invoiceGridLocator(page)).toBeVisible({ timeout: 30000 });
         });
 
-        await test.step('Delete invoices top to bottom, verifying each deletion via the API response', async () => {
-          const { deletedCount, failedCount, skippedInvoices } = await deleteInvoicesTopToBottomViaApi(page, RUNTIME_BUDGET_MS);
+        await test.step('Reject pending approvals, then delete invoices, verifying each deletion via the API response', async () => {
+          // Leave headroom so the summary logs before the test timeout; INVOICE_CLEANUP_MINUTES caps local runs.
+          const workBudgetMs = process.env.INVOICE_CLEANUP_MINUTES
+            ? Number(process.env.INVOICE_CLEANUP_MINUTES) * 60 * 1000
+            : RUNTIME_BUDGET_MS - 5 * 60 * 1000;
+          const baseUrl = new URL(page.url()).origin;
+          const { deletedCount, rejectedCount, failedCount, skippedInvoices } = await rejectAndDeleteAllInvoices(page, baseUrl, workBudgetMs);
 
-          console.log(`[cleanup-invoices-delete] Summary — deleted (API-confirmed): ${deletedCount}, blocked/failed: ${failedCount}`);
+          console.log(`[cleanup-invoices-delete] Summary — rejected on behalf: ${rejectedCount}, deleted (API-confirmed): ${deletedCount}, blocked/failed: ${failedCount}`);
           if (skippedInvoices.length > 0) {
             console.log(`[cleanup-invoices-delete] Invoices left in place (deletion blocked by API): ${skippedInvoices.join(', ')}`);
           }
@@ -1670,15 +1862,11 @@ test.describe('Invoices cleanup', () => {
   });
 
   test('TC269 @cleanup @invoice Delete all invoices on a specific job Invoice tab, verified via API response', async ({ browser }) => {
-    // Targets a single job's Invoice tab directly by URL (rather than the
-    // global /invoices list used by TC267) and deletes every invoice found
-    // there. MCP-verified 2026-09-09: a job's Invoice tab renders the exact
-    // same grid shape as the global Invoices list — a `[role="treegrid"]`
-    // with an "Invoice Number" columnheader, and each row's Actions pane
-    // exposing "View Invoice" / "Reassign Invoice" / "Delete Invoice" buttons
-    // behind a "Delete Invoice — Are you sure...? Cancel / Delete" confirm
-    // dialog — so the same invoiceGridLocator/deleteInvoicesTopToBottomViaApi
-    // helpers used by TC267 apply unchanged, just pointed at the job URL.
+    // Deletes every invoice on the job named in the target URL, using the same
+    // reject-on-behalf-then-delete flow as TC267 (rejectAndDeleteAllInvoices), limited
+    // to that job. MCP-verified 2026-11-10: when the job has no invoices its Invoice tab
+    // renders no grid at all, so the test passes with "nothing to delete" instead of
+    // requiring the grid to be visible.
     const RUNTIME_BUDGET_MS = 60 * 60 * 1000; // 1 hour — a single job's invoice list is bounded
     test.setTimeout(RUNTIME_BUDGET_MS);
 
@@ -1699,14 +1887,19 @@ test.describe('Invoices cleanup', () => {
           }
 
           await expect(page).toHaveURL(/tab=invoices/i);
-          await ensureLeftPanelExpanded(page);
-          await expect(invoiceGridLocator(page)).toBeVisible({ timeout: 30000 });
         });
 
-        await test.step('Delete all invoices on this job top to bottom, verifying each deletion via the API response', async () => {
-          const { deletedCount, failedCount, skippedInvoices } = await deleteInvoicesTopToBottomViaApi(page, RUNTIME_BUDGET_MS);
+        await test.step('Reject pending approvals, then delete this job\'s invoices, verifying each deletion via the API status code', async () => {
+          const jobId = Number((targetUrl.match(/\/jobs\/(\d+)/) || [])[1]);
+          if (!jobId) throw new Error(`Could not read a job id from target URL: ${targetUrl}`);
+          const workBudgetMs = process.env.INVOICE_CLEANUP_MINUTES
+            ? Number(process.env.INVOICE_CLEANUP_MINUTES) * 60 * 1000
+            : RUNTIME_BUDGET_MS - 5 * 60 * 1000;
+          const baseUrl = new URL(page.url()).origin;
+          console.log(`[cleanup-job-invoices-delete] Job ${jobId}: ${(await fetchInvoiceList(page, jobId)).length} invoice(s) found.`);
+          const { deletedCount, rejectedCount, failedCount, skippedInvoices } = await rejectAndDeleteAllInvoices(page, baseUrl, workBudgetMs, jobId);
 
-          console.log(`[cleanup-job-invoices-delete] Summary — deleted (API-confirmed): ${deletedCount}, blocked/failed: ${failedCount}`);
+          console.log(`[cleanup-job-invoices-delete] Summary — rejected on behalf: ${rejectedCount}, deleted (API-confirmed): ${deletedCount}, blocked/failed: ${failedCount}`);
           if (skippedInvoices.length > 0) {
             console.log(`[cleanup-job-invoices-delete] Invoices left in place (deletion blocked by API): ${skippedInvoices.join(', ')}`);
           }
