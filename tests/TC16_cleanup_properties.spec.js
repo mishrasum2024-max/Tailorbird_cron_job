@@ -2057,6 +2057,172 @@ test.describe('Change orders cleanup', () => {
   });
 });
 
+/**
+ * Reports > "Explore by module": for every module card (Portfolio, Budgets, CapEx, Invoices,
+ * Approvals, Unit Tracker, Draw Reporting, ...) open its "<Module> reports" drawer and delete
+ * every report except the 2 most recent. MCP-verified 2026-11-11:
+ *  - The drawer lists one row per report, newest first (same order as
+ *    GET /api/reports/versions?module=<m>), each with a link /reports/<id>?versionId=… and a
+ *    "Delete report" button; the card's "N versions" equals the number of rows.
+ *  - Delete opens "Delete report?" ("… and all of its versions will be removed") -> Delete fires
+ *    DELETE /api/reports/<id> -> 200, and the row disappears from the drawer.
+ *  - Rows are versions: a report with V1+V2 shows 2 rows (Portfolio #254). There is no
+ *    per-version delete (report page only has Rename/Regenerate/Save as Template/Export), so
+ *    the 2 most recent REPORTS are kept with all their versions; every other report is deleted.
+ * A 400 is retried up to 2 times; anything that still can't be deleted is skipped and the loop
+ * moves on (never fails the run).
+ */
+async function cleanupModuleReports(page, deadline) {
+  const TAG = '[cleanup-reports]';
+  const KEEP = 2;
+  const MAX_RETRIES = 2;
+  const summary = [];
+
+  // Module cards: buttons whose text is "<Module>\n\n<N> version(s)".
+  const readCards = () => page.getByRole('button').evaluateAll((btns) => btns
+    .map((b) => (b.innerText || '').trim().match(/^([^\n]+)\n+\s*(\d+) versions?$/))
+    .filter(Boolean)
+    .map((m) => ({ name: m[1].trim(), count: Number(m[2]) })));
+
+  // Cards render "0 versions" until GET /api/reports?counts=1 lands (seen in a headed run), so
+  // wait (up to 30s) for a non-zero count before trusting them.
+  let cards = await readCards();
+  for (let i = 0; i < 60 && !cards.some((c) => c.count > 0); i++) {
+    await page.waitForTimeout(500);
+    cards = await readCards();
+  }
+  console.log(`${TAG} Modules: ${cards.map((c) => `${c.name}=${c.count}`).join(', ')}`);
+  // Report names for logging only (the drawer row text near the button is just the status).
+  const reportNames = new Map(await page.evaluate(async () => {
+    const j = await (await fetch('/api/reports?counts=1')).json();
+    return (j.reports || []).map((r) => [String(r.id), r.name]);
+  }).catch(() => []));
+
+  for (const card of cards) {
+    if (Date.now() >= deadline) break;
+    if (card.count <= KEEP) {
+      console.log(`${TAG} ${card.name}: ${card.count} report(s) — nothing to delete.`);
+      continue;
+    }
+
+    await page.keyboard.press('Escape').catch(() => {});
+    const cardBtn = page.getByRole('button', { name: new RegExp(`^${card.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+\\d+ versions?$`) }).first();
+    await cardBtn.click();
+    const drawer = page.getByRole('dialog').filter({ hasText: `${card.name} reports` }).first();
+    await drawer.waitFor({ state: 'visible', timeout: 15000 });
+    const rowsDelete = drawer.getByRole('button', { name: 'Delete report' });
+    await rowsDelete.first().waitFor({ state: 'visible', timeout: 30000 }).catch(() => {});
+
+    // Report id + title of every row, in drawer order (top = most recent).
+    const readRows = () => drawer.evaluate((d) => [...d.querySelectorAll('button[aria-label="Delete report"]')].map((b) => {
+      let el = b;
+      for (let i = 0; i < 6 && el.parentElement; i++) {
+        el = el.parentElement;
+        if (el.querySelector('a[href*="/reports/"]')) break;
+      }
+      const href = el.querySelector('a[href*="/reports/"]')?.getAttribute('href') || '';
+      return { id: (href.match(/\/reports\/(\d+)/) || [])[1] || null };
+    })).then((rows) => rows.map((r) => ({ ...r, title: reportNames.get(String(r.id)) || '' })));
+
+    const initial = await readRows();
+    // The 2 most recent distinct reports (rows are versions; a report can fill 2 rows).
+    const keptIds = [...new Set(initial.map((r) => r.id).filter(Boolean))].slice(0, KEEP);
+    console.log(`${TAG} ${card.name}: ${initial.length} report(s); keeping the ${KEEP} most recent (#${keptIds.join(', #')}).`);
+
+    const skipped = new Map();
+    let deleted = 0;
+    while (Date.now() < deadline) {
+      const rows = await readRows();
+      // Never touch the top KEEP rows; pick the first deletable row below them.
+      let idx = rows.findIndex((r) => r.id && !keptIds.includes(r.id) && !skipped.has(r.id));
+      if (idx < 0) break;
+      const target = rows[idx];
+
+      const attempt = async () => {
+        await rowsDelete.nth(idx).click();
+        const confirm = page.getByRole('dialog').filter({ hasText: 'Delete report?' }).first();
+        await confirm.waitFor({ state: 'visible', timeout: 10000 });
+        const respPromise = page.waitForResponse(
+          (r) => r.request().method() === 'DELETE' && new RegExp(`/api/reports/${target.id}(\\?|$)`).test(r.url()),
+          { timeout: 60000 },
+        ).catch(() => null);
+        await confirm.getByRole('button', { name: 'Delete', exact: true }).click();
+        const resp = await respPromise;
+        await confirm.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+        return resp ? resp.status() : null;
+      };
+
+      let status = await attempt().catch(() => null);
+      for (let retry = 1; retry <= MAX_RETRIES && status === 400; retry++) {
+        console.log(`${TAG} ${card.name}: report #${target.id} got HTTP 400 — retry ${retry}/${MAX_RETRIES} in 3s.`);
+        await page.keyboard.press('Escape').catch(() => {});
+        await page.waitForTimeout(3000);
+        const again = (await readRows()).findIndex((r) => r.id === target.id);
+        if (again < 0) break; // row vanished
+        idx = again; // re-locate: attempt() clicks rowsDelete.nth(idx)
+        status = await attempt().catch(() => null);
+      }
+
+      if (status === 200) {
+        deleted += 1;
+        console.log(`${TAG} ${card.name}: deleted report #${target.id} "${target.title}" (HTTP 200) — ${deleted} deleted`);
+        // Wait for the row to leave the drawer before reading the list again.
+        for (let i = 0; i < 20 && (await readRows()).some((r) => r.id === target.id); i++) await page.waitForTimeout(250);
+      } else {
+        skipped.set(target.id, status == null ? 'no DELETE response' : `HTTP ${status}`);
+        console.log(`${TAG} ${card.name}: could not delete report #${target.id} "${target.title}" (${skipped.get(target.id)}) — skipping to the next one.`);
+        await page.keyboard.press('Escape').catch(() => {});
+      }
+    }
+
+    const left = (await readRows()).length;
+    console.log(`${TAG} ${card.name}: deleted ${deleted}, skipped ${skipped.size}, ${left} report(s) left.`);
+    summary.push({ module: card.name, before: initial.length, deleted, skipped: [...skipped].map(([id, why]) => `#${id} ${why}`), left });
+
+    // Close the drawer before the next module.
+    await page.keyboard.press('Escape').catch(() => {});
+    await drawer.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+  }
+  return summary;
+}
+
+test.describe('Reports cleanup', () => {
+  test('TC274 @cleanup @reports Keep the 2 most recent reports per module (Explore by module) and delete the rest, verified via API status 200', async ({ browser }) => {
+    const RUNTIME_BUDGET_MS = 60 * 60 * 1000; // 1 hour cap
+    test.setTimeout(RUNTIME_BUDGET_MS);
+    const workBudgetMs = process.env.REPORT_CLEANUP_MINUTES
+      ? Number(process.env.REPORT_CLEANUP_MINUTES) * 60 * 1000
+      : RUNTIME_BUDGET_MS - 3 * 60 * 1000;
+
+    const context = await browser.newContext({ storageState: 'sessionState.json' });
+    const page = await context.newPage();
+    try {
+      await test.step('Open Reports (reused session)', async () => {
+        const dashboardUrl = process.env.DASHBOARD_URL || data.dashboardUrl;
+        const origin = /^https?:\/\//.test(dashboardUrl) ? new URL(dashboardUrl).origin : '';
+        await page.goto(`${origin}/reports`, { waitUntil: 'domcontentloaded' });
+        if ((page.url() || '').includes('/login')) {
+          throw new Error('sessionState.json is not authenticated. Refresh sessionState once, then rerun this test.');
+        }
+        await expect(page.getByText('Explore by module', { exact: false }).first()).toBeVisible({ timeout: 60000 });
+        await expect(page.getByRole('button', { name: /\d+ versions?$/ }).first()).toBeVisible({ timeout: 60000 });
+      });
+
+      await test.step('Per module: keep the 2 most recent reports, delete the rest', async () => {
+        const summary = await cleanupModuleReports(page, Date.now() + workBudgetMs);
+        for (const s of summary) {
+          console.log(`[cleanup-reports] Summary ${s.module}: ${s.before} -> ${s.left} (deleted ${s.deleted}, skipped ${s.skipped.length})`);
+        }
+        const skipped = summary.flatMap((s) => s.skipped.map((x) => `${s.module} ${x}`));
+        if (skipped.length) test.info().annotations.push({ type: 'reports-skipped', description: skipped.join('; ') });
+        // Skipped reports never fail the run; only a broken setup does.
+      });
+    } finally {
+      await context.close().catch(() => {});
+    }
+  });
+});
+
 test.describe('Invoices cleanup', () => {
   test('TC267 @cleanup @invoice Delete invoices from the global Invoices list top to bottom, verified via API response', async ({ browser }) => {
     // This test runs for up to 3 hours, deleting invoices from the top of the
